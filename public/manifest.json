@@ -1,0 +1,10 @@
+{
+  "name": "勤怠・給与管理",
+  "short_name": "勤怠管理",
+  "description": "出退勤・休憩・給与を自動計算するアプリ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#b8860b",
+  "icons": []
+}
