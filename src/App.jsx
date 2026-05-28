@@ -255,7 +255,7 @@ export default function WorkTracker() {
 
         {/* Nav */}
         <div style={{display:"flex",gap:6,margin:"18px 0 20px"}}>
-          {[["input","✏️ 打刻入力"],["history","📋 履歴"],["settings","⚙️ 設定"]].map(([k,label])=>(
+          {[["input","✏️ 打刻入力"],["history","📋 履歴"],["settings","⚙️ 設定"],["help","❓ 使い方"]].map(([k,label])=>(
             <button key={k} onClick={()=>setView(k)} style={{flex:1,padding:"10px 4px",borderRadius:9,border:"none",
               background:view===k?C.gold:C.surface,color:view===k?"#fff":C.muted,
               fontWeight:view===k?700:500,fontSize:13,cursor:"pointer",
@@ -280,7 +280,14 @@ export default function WorkTracker() {
                 <div style={{display:"flex",alignItems:"center",marginBottom:8,gap:6}}>
                   <span style={{fontSize:13,fontWeight:600,color:C.muted}}>区間 {i+1}</span>
                   {i>0&&<span style={{fontSize:12,fontWeight:600,color:C.blue}}>（中抜け後）</span>}
-                  {form.segments.length>1&&<button onClick={()=>rmSeg(i)} style={{marginLeft:"auto",background:"none",border:"none",color:C.red,fontSize:18,cursor:"pointer"}}>×</button>}
+                  <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
+                    <button onClick={handleSave} disabled={syncing} style={{
+                      padding:"4px 10px",borderRadius:7,border:"none",
+                      background:syncing?"#d4a017":C.gold,color:"#fff",
+                      fontWeight:700,fontSize:13,cursor:syncing?"not-allowed":"pointer",
+                    }}>{syncing?"…":"保存"}</button>
+                    {form.segments.length>1&&<button onClick={()=>rmSeg(i)} style={{background:"none",border:"none",color:C.red,fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>}
+                  </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                   {[["in","🟢 出勤"],["out","🔴 退勤"]].map(([field,lbl])=>(
@@ -311,7 +318,14 @@ export default function WorkTracker() {
                       （{fmtH(toMin(brk.out)-toMin(brk.in))}）
                     </span>
                   )}
-                  <button onClick={()=>rmBrk(i)} style={{marginLeft:"auto",background:"none",border:"none",color:C.red,fontSize:18,cursor:"pointer"}}>×</button>
+                  <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
+                    <button onClick={handleSave} disabled={syncing} style={{
+                      padding:"4px 10px",borderRadius:7,border:"none",
+                      background:syncing?"#d4a017":C.gold,color:"#fff",
+                      fontWeight:700,fontSize:13,cursor:syncing?"not-allowed":"pointer",
+                    }}>{syncing?"…":"保存"}</button>
+                    <button onClick={()=>rmBrk(i)} style={{background:"none",border:"none",color:C.red,fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>
+                  </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                   {[["in","開始"],["out","終了"]].map(([field,lbl])=>(
@@ -434,6 +448,99 @@ export default function WorkTracker() {
             </div>
           </div>
         )}
+
+        {/* ── HELP VIEW ──────────────────────────────────────────────────── */}
+        {view==="help"&&(
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
+
+            <HelpSection title="📱 基本の使い方" C={C}>
+              {[
+                {n:"1",h:"出勤時：「今」ボタンをタップ",p:"打刻入力タブで出勤欄の「今」をタップすると現在時刻が自動入力されます。"},
+                {n:"2",h:"休憩がある場合：「＋休憩を追加」",p:"休憩の開始・終了を入力すると給与から自動差し引きされます。複数回OK。"},
+                {n:"3",h:"退勤時：退勤欄の「今」をタップ",p:"給与内訳がリアルタイムでプレビューされます。"},
+                {n:"4",h:"「記録を保存 → Sheets」をタップ",p:"ローカル保存とGoogleスプレッドシートへの転記が同時に行われます。"},
+              ].map((s,i)=>(
+                <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start",marginBottom:12}}>
+                  <div style={{background:C.gold,color:"#fff",fontWeight:800,fontSize:13,width:28,height:28,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{s.n}</div>
+                  <div>
+                    <div style={{fontSize:14,fontWeight:700,marginBottom:3}}>{s.h}</div>
+                    <div style={{fontSize:13,color:C.muted}}>{s.p}</div>
+                  </div>
+                </div>
+              ))}
+            </HelpSection>
+
+            <HelpSection title="🔄 中抜け勤務" C={C}>
+              <div style={{fontSize:13,color:C.muted,lineHeight:1.8}}>
+                <div>① 区間1に午前の出退勤を入力</div>
+                <div>② 「＋中抜け区間を追加」をタップ</div>
+                <div>③ 区間2に午後の出退勤を入力</div>
+                <div style={{marginTop:8,padding:"8px 12px",background:"#fffbeb",borderRadius:8,border:"1px solid #fde68a",color:"#92400e",fontWeight:500}}>
+                  💡 出勤だけ保存 → 退勤時に同じ日付で再保存すると1レコードに自動マージ
+                </div>
+              </div>
+            </HelpSection>
+
+            <HelpSection title="💰 給与計算の基準" C={C}>
+              <div style={{fontSize:13}}>
+                {[
+                  {label:"通常時間",rate:"×1.00",color:C.text,note:"8時間以内・深夜以外"},
+                  {label:"残業手当",rate:"×1.25",color:C.ot,note:"1日8時間超"},
+                  {label:"深夜手当",rate:"×1.25",color:C.ln,note:"22時〜翌5時（8h以内）"},
+                  {label:"深夜残業",rate:"×1.50",color:C.lno,note:"22時〜翌5時（8h超）"},
+                ].map((r,i)=>(
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+                    <div>
+                      <span style={{fontWeight:700,color:r.color}}>{r.label}</span>
+                      <span style={{color:C.dim,marginLeft:8,fontSize:12}}>{r.note}</span>
+                    </div>
+                    <span style={{fontWeight:800,color:r.color,fontSize:15}}>{r.rate}</span>
+                  </div>
+                ))}
+                <div style={{marginTop:10,fontSize:12,color:C.dim}}>※ 休憩時間は給与計算から自動除外されます</div>
+              </div>
+            </HelpSection>
+
+            <HelpSection title="📲 ホーム画面への追加" C={C}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <div style={{background:"#f3f4f6",borderRadius:10,padding:"12px",fontSize:13}}>
+                  <div style={{fontWeight:700,marginBottom:8}}>🍎 iPhone</div>
+                  {["SafariでURLを開く","共有ボタン（□↑）をタップ","「ホーム画面に追加」を選択","「追加」をタップ"].map((s,i)=>(
+                    <div key={i} style={{color:C.muted,marginBottom:4}}>{"0123"[i]}. {s}</div>
+                  ))}
+                </div>
+                <div style={{background:"#f3f4f6",borderRadius:10,padding:"12px",fontSize:13}}>
+                  <div style={{fontWeight:700,marginBottom:8}}>🤖 Android</div>
+                  {["ChromeでURLを開く","右上の「⋮」をタップ","「ホーム画面に追加」を選択","「追加」をタップ"].map((s,i)=>(
+                    <div key={i} style={{color:C.muted,marginBottom:4}}>{"0123"[i]}. {s}</div>
+                  ))}
+                </div>
+              </div>
+            </HelpSection>
+
+            <HelpSection title="❓ よくある質問" C={C}>
+              {[
+                {q:"出勤だけ先に保存できる？",a:"できます。退勤後に同じ日付で再保存すると自動マージされます。"},
+                {q:"過去の記録を修正できる？",a:"履歴タブ → 日付をタップ → 「編集」で修正できます。"},
+                {q:"データはどこに保存される？",a:"ブラウザ内とGoogleスプレッドシートの2箇所に保存されます。"},
+                {q:"時給を変更したら過去も変わる？",a:"アプリ表示は変わりますが、スプレッドシートの過去データは変わりません。"},
+              ].map((f,i)=>(
+                <div key={i} style={{padding:"12px 0",borderBottom:`1px solid ${C.border}`}}>
+                  <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>Q. {f.q}</div>
+                  <div style={{fontSize:13,color:C.muted}}>A. {f.a}</div>
+                </div>
+              ))}
+            </HelpSection>
+
+            <div style={{textAlign:"center",marginTop:20,padding:"16px",background:"#f0fdf4",borderRadius:10,border:"1px solid #bbf7d0"}}>
+              <div style={{fontSize:13,fontWeight:600,color:"#15803d",marginBottom:6}}>詳しい取扱説明書</div>
+              <a href="https://work-tracker-sepia.vercel.app/help" target="_blank"
+                style={{fontSize:13,color:"#15803d",fontWeight:700}}>
+                オンラインマニュアルを開く →
+              </a>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -513,6 +620,18 @@ function WageBreakdown({w,settings,C,compact}){
         <div style={{borderTop:`1px solid ${C.border}`,paddingTop:6}}/>
         <div style={{fontSize:15,fontWeight:800,color:C.gold,textAlign:"right",borderTop:`1px solid ${C.border}`,paddingTop:6}}>{settings.currency}{Math.round(w.totalPay).toLocaleString()}</div>
       </div>
+    </div>
+  );
+}
+
+
+function HelpSection({title, children, C}) {
+  return (
+    <div style={{marginBottom:20}}>
+      <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px solid ${C.gold}`}}>
+        {title}
+      </div>
+      {children}
     </div>
   );
 }
