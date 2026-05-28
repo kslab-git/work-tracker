@@ -161,7 +161,15 @@ export default function WorkTracker() {
     setRecords(updatedRecords);
     setForm(emptyForm());
     showToast(toastMsg);
-    await syncToSheet(savedRecord);
+
+    // 出退勤が両方揃っている区間がある場合のみSheets同期
+    // 休憩のみ・出勤のみ・退勤のみの場合はスキップ
+    const hasComplete = savedRecord.segments.some(s=>s.in&&s.out);
+    if (hasComplete) {
+      await syncToSheet(savedRecord);
+    } else {
+      showToast("ローカルに保存しました（Sheets同期は出退勤揃った時）");
+    }
   };
 
   const syncToSheet = async (record) => {
@@ -173,16 +181,24 @@ export default function WorkTracker() {
       const row=[record.date,segStr,brkStr,fmtH(w.totalBreakMin),fmtH(w.totalMin),Math.round(w.normalPay),Math.round(w.otPay),Math.round(w.lnPay),Math.round(w.lnoPay),Math.round(w.totalPay),record.memo||""];
 
       if (!sheetId) {
-        const data=await callClaude(`Google Driveに「勤怠記録」という名前の新しいスプレッドシートを作成してください。作成したファイルのIDのみ返してください。`);
+        // 新規作成＋データ書き込みを1回で行う
+        const createPrompt = `Google Driveに「勤怠記録」という名前の新しいスプレッドシートを作成し、「勤怠」というシートに以下のヘッダーとデータを追加してください。
+ヘッダー行: 日付, 勤務区間, 休憩時間, 休憩合計, 実働時間, 通常給与, 残業手当, 深夜手当, 深夜残業, 合計給与, メモ
+データ行: ${row.join(", ")}
+完了後、作成したスプレッドシートのIDを「ID:XXXXXXX」の形式で返してください。`;
+        const data=await callClaude(createPrompt);
         const txt=data.content?.filter(b=>b.type==="text").map(b=>b.text).join("").trim();
-        const idMatch=txt.match(/([a-zA-Z0-9_-]{25,})/);
+        console.log("Create response:", txt);
+        const idMatch=txt.match(/ID:([a-zA-Z0-9_-]{20,})/)||txt.match(/([a-zA-Z0-9_-]{44})/)||txt.match(/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
         if (idMatch) {
           const newId=idMatch[1];
           setSheetId(newId);
           localStorage.setItem(SHEET_ID_KEY,newId);
-          await writeRow(newId,row);
           showToast("スプレッドシートを作成・保存しました ✓");
-        } else { showToast("シート作成に失敗しました","err"); }
+        } else {
+          showToast("シート作成に失敗。設定からGoogle連携を確認してください","err");
+          console.error("Could not extract sheet ID from:", txt);
+        }
       } else {
         await writeRow(sheetId,row);
         showToast("スプレッドシートに保存しました ✓");
