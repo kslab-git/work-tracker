@@ -159,7 +159,7 @@ export default function WorkTracker() {
   });
   const [periodKey,setPeriodKey]=useState(()=>{
     const s={...DEFAULT_SETTINGS,...JSON.parse(localStorage.getItem(SETTINGS_KEY)||"{}")};
-    const cd=s.workplaces?.A?.closingDay||25;
+    const cd=s.workplaces?.A?.closingDay??25;
     return localStorage.getItem(PERIOD_KEY)||currentPeriodKey(cd);
   });
   const [view,setView]=useState("input");
@@ -190,7 +190,7 @@ export default function WorkTracker() {
 
   const showToast=(msg,type="ok")=>{setToast({msg,type});setTimeout(()=>setToast({msg:"",type:"ok"}),2500);};
 
-  const activeCD=settings.workplaces[activeWP]?.closingDay||25;
+  const activeCD=settings.workplaces[activeWP]?.closingDay??25;
   const periodRecords=useMemo(()=>
     records.filter(r=>isInPeriod(r.date,periodKey,activeCD))
       .sort((a,b)=>b.date.localeCompare(a.date)),
@@ -297,7 +297,7 @@ export default function WorkTracker() {
   };
   const handleSettingsSave=()=>{
     setSettings({...settingsForm});
-    const newCD=settingsForm.workplaces?.A?.closingDay||25;
+    const newCD=settingsForm.workplaces?.[activeWP]?.closingDay??25;
     setPeriodKey(currentPeriodKey(newCD));
     showToast("設定を保存しました");
   };
@@ -337,6 +337,8 @@ export default function WorkTracker() {
   const switchWP=(wp)=>{
     setActiveWP(wp);
     setForm(f=>({...emptyForm(),wp}));
+    const cd=settings.workplaces[wp]?.closingDay??25;
+    setPeriodKey(currentPeriodKey(cd));
   };
 
   // ─── Colors ─────────────────────────────────────────────────────────────────
@@ -358,7 +360,7 @@ export default function WorkTracker() {
     const now=new Date(),y=now.getFullYear(),m=now.getMonth()+1;
     return WPS.map(wp=>{
       const cfg=settings.workplaces[wp];
-      const cd=cfg.closingDay||25;
+      const cd=cfg.closingDay??25;
       const pd=cfg.payDay||10;
       // 今月支払い = 前月締め期間
       const prevPK=shiftPeriod(`${y}-${pad(m)}`,-1);
@@ -613,7 +615,7 @@ export default function WorkTracker() {
                 </div>
                 {WPS.map(wp=>{
                   const cfg=settings.workplaces[wp];
-                  const cd=cfg?.closingDay||25;
+                  const cd=cfg?.closingDay??25;
                   const wpPeriodRecords=records.filter(r=>isInPeriod(r.date,periodKey,cd)&&r[wp]&&(r[wp].segments||[]).some(s=>s.in||s.out));
                   let totalPay=0,totalMin=0;
                   const dailyRows=wpPeriodRecords.map(r=>{
@@ -655,7 +657,7 @@ export default function WorkTracker() {
                 <div style={{background:"linear-gradient(135deg,#fff8ee,#ffffff)",border:`2px solid ${C.gold}`,borderRadius:14,padding:"16px",textAlign:"center"}}>
                   <div style={{fontSize:13,color:C.muted,fontWeight:600,marginBottom:4}}>両職場合計</div>
                   <div style={{fontSize:28,fontWeight:800,color:C.gold}}>{fmtMoney(WPS.reduce((s,wp)=>{
-                    const cfg=settings.workplaces[wp];const cd=cfg?.closingDay||25;
+                    const cfg=settings.workplaces[wp];const cd=cfg?.closingDay??25;
                     return s+records.filter(r=>isInPeriod(r.date,periodKey,cd)&&r[wp]&&(r[wp].segments||[]).some(s=>s.in||s.out)).reduce((ps,r)=>{
                       const w=calcWage(r[wp].segments||[],r[wp].breaks||[],getRateForDate(r.date,cfg?.rateHistory||[]));
                       return ps+w.totalPay;
