@@ -1,13 +1,21 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 
 // ─── Storage Keys ──────────────────────────────────────────────────────────────
 const STORAGE_KEY  = "wt4_records";
 const SETTINGS_KEY = "wt4_settings";
 const PERIOD_KEY   = "wt4_period";
 const BACKUP_KEY   = "wt4_last_backup";
+const SHIFT_KEY    = "wt4_shifts";
+const PATTERNS_KEY = "wt4_patterns";
 
 // 職場定義
 const WPS = ["A","B"];
+const WP_COLORS = {
+  A: { primary:"#b8860b", light:"#fff8ee", border:"#d4a017", shadow:"rgba(184,134,11,0.3)", gradient:"135deg,#fff8ee,#ffffff", badge:"#fff3cd",
+       breakBg:"#fffbeb", breakBorder:"#fde68a", breakColor:"#f59e0b", breakDash:"#fcd34d", breakText:"#92400e" },
+  B: { primary:"#1d6fb8", light:"#eff6ff", border:"#3b82f6", shadow:"rgba(29,111,184,0.3)", gradient:"135deg,#eff6ff,#ffffff", badge:"#dbeafe",
+       breakBg:"#eff6ff", breakBorder:"#93c5fd", breakColor:"#2563eb", breakDash:"#60a5fa", breakText:"#1e3a5f" },
+};
 const DEFAULT_WP = (id) => ({
   name: id === "A" ? "職場A" : "職場B",
   rateHistory: [{ from: "2020-01-01", rate: 1200 }],
@@ -145,6 +153,66 @@ function downloadCSV(records, settings, label="勤怠記録") {
   URL.revokeObjectURL(url);
 }
 
+
+// ─── シフト見込み給与計算 ────────────────────────────────────────────────────
+function calcShiftPay(segments, breakMin, lateNightBreak, rate) {
+  // breakMin: 休憩時間（分）、lateNightBreak: 深夜帯に休憩するか
+  let totalWorkMin = 0, nm = 0, om = 0, ln = 0, lno = 0;
+  let remainBreak = breakMin || 0;
+
+  for (const seg of segments) {
+    if (!seg.in || !seg.out) continue;
+    const start = toMin(seg.in);
+    let end = toMin(seg.out);
+    if (end <= start) end += 24 * 60;
+    for (let m = start; m < end; m++) {
+      const mod = m % (24 * 60);
+      const isLate = mod >= 22 * 60 || mod < 5 * 60;
+      const isOT = totalWorkMin >= 480;
+      // 深夜帯休憩チェックONの場合は深夜時間から先に引く
+      if (remainBreak > 0) {
+        if (lateNightBreak && isLate) { remainBreak--; continue; }
+        if (!lateNightBreak && !isLate) { remainBreak--; continue; }
+        if (remainBreak > 0 && !lateNightBreak && isLate) { remainBreak--; continue; }
+      }
+      totalWorkMin++;
+      if (!isOT && !isLate) nm++;
+      else if (isOT && !isLate) om++;
+      else if (!isOT && isLate) ln++;
+      else lno++;
+    }
+  }
+  const normalPay = (nm/60)*rate, otPay = (om/60)*rate*1.25;
+  const lnPay = (ln/60)*rate*1.25, lnoPay = (lno/60)*rate*1.5;
+  return { nm, om, ln, lno, normalPay, otPay, lnPay, lnoPay,
+    totalPay: normalPay+otPay+lnPay+lnoPay, totalMin: nm+om+ln+lno };
+}
+
+// シフトCSV生成
+function generateShiftCSV(shifts, patterns, settings) {
+  const BOM = "﻿";
+  const header = ["日付","曜日","職場","パターン","出勤1","退勤1","出勤2","退勤2","休憩(分)","深夜休憩","通常h","残業h","深夜h","深夜残業h","見込み給与","メモ"];
+  const days = ["日","月","火","水","木","金","土"];
+  const rows = [...shifts].sort((a,b)=>a.date.localeCompare(b.date)).map(s=>{
+    const d = new Date(s.date+"T00:00:00");
+    const cfg = settings.workplaces[s.wp];
+    const rate = getRateForDate(s.date, cfg?.rateHistory||[]);
+    const w = calcShiftPay(s.segments||[], s.breakMin||0, s.lateNightBreak||false, rate);
+    const pat = patterns[s.wp]?.find(p=>p.id===s.patternId);
+    return [
+      s.date, days[d.getDay()], cfg?.name||s.wp, pat?.name||"手入力",
+      s.segments?.[0]?.in||"", s.segments?.[0]?.out||"",
+      s.segments?.[1]?.in||"", s.segments?.[1]?.out||"",
+      s.breakMin||0, s.lateNightBreak?"あり":"なし",
+      (w.nm/60).toFixed(2), (w.om/60).toFixed(2), (w.ln/60).toFixed(2), (w.lno/60).toFixed(2),
+      Math.round(w.totalPay), s.memo||""
+    ];
+  });
+  const csv = [header,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("
+");
+  return BOM + csv;
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function WorkTracker() {
   const [records,setRecords]=useState(()=>{try{return JSON.parse(localStorage.getItem(STORAGE_KEY))||[];}catch{return[];}});
@@ -157,6 +225,13 @@ export default function WorkTracker() {
       return s;
     }catch{return DEFAULT_SETTINGS;}
   });
+  const [shifts,setShifts]=useState(()=>{try{return JSON.parse(localStorage.getItem(SHIFT_KEY))||[];}catch{return[];}});
+  const [patterns,setPatterns]=useState(()=>{try{return JSON.parse(localStorage.getItem(PATTERNS_KEY))||{A:[],B:[]};}catch{return{A:[],B:[];};}});
+  const [shiftView,setShiftView]=useState("calendar");
+  const [shiftMonth,setShiftMonth]=useState(()=>{const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}`;});
+  const [shiftWP,setShiftWP]=useState("A");
+  const [editShift,setEditShift]=useState(null);
+  const [editPattern,setEditPattern]=useState(null);
   const [periodKey,setPeriodKey]=useState(()=>{
     const s={...DEFAULT_SETTINGS,...JSON.parse(localStorage.getItem(SETTINGS_KEY)||"{}")};
     const cd=s.workplaces?.A?.closingDay??25;
@@ -176,6 +251,8 @@ export default function WorkTracker() {
 
   useEffect(()=>{localStorage.setItem(STORAGE_KEY,JSON.stringify(records));},[records]);
   useEffect(()=>{localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));},[settings]);
+  useEffect(()=>{localStorage.setItem(SHIFT_KEY,JSON.stringify(shifts));},[shifts]);
+  useEffect(()=>{localStorage.setItem(PATTERNS_KEY,JSON.stringify(patterns));},[patterns]);
   useEffect(()=>{localStorage.setItem(PERIOD_KEY,periodKey);},[periodKey]);
 
   // 毎日自動バックアップ
@@ -342,6 +419,7 @@ export default function WorkTracker() {
   };
 
   // ─── Colors ─────────────────────────────────────────────────────────────────
+  const WPC=WP_COLORS[activeWP];
   const C={bg:"#f5f6f8",surface:"#ffffff",border:"#e0e3e8",borderAccent:"#d0d4db",
     gold:"#b8860b",text:"#1a1a2e",muted:"#6b7280",dim:"#9ca3af",
     green:"#16a34a",blue:"#2563eb",red:"#dc2626",ot:"#ea580c",ln:"#7c3aed",lno:"#be185d",
@@ -351,7 +429,7 @@ export default function WorkTracker() {
     fontFamily:"inherit",boxSizing:"border-box",width:"100%"};
 
   const SaveBtn=({label="保存"})=>(
-    <button onClick={handleSave} style={{padding:"4px 10px",borderRadius:7,border:"none",background:C.gold,color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer"}}>{label}</button>
+    <button onClick={handleSave} style={{padding:"4px 10px",borderRadius:7,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer"}}>{label}</button>
   );
 
   // ─── Summary: 支払月別 ────────────────────────────────────────────────────
@@ -385,9 +463,9 @@ export default function WorkTracker() {
       {/* Toast */}
       {toast.msg&&(
         <div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",
-          background:"#fff",border:`1px solid ${toast.type==="err"?C.red:C.gold}`,
+          background:"#fff",border:`1px solid ${toast.type==="err"?C.red:WPC.primary}`,
           borderRadius:10,padding:"10px 22px",fontSize:14,fontWeight:600,
-          color:toast.type==="err"?C.red:C.gold,zIndex:999,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",whiteSpace:"nowrap"}}>
+          color:toast.type==="err"?C.red:WPC.primary,zIndex:999,boxShadow:"0 4px 20px rgba(0,0,0,0.12)",whiteSpace:"nowrap"}}>
           {toast.type==="err"?"⚠️":"✓"} {toast.msg}
         </div>
       )}
@@ -409,7 +487,7 @@ export default function WorkTracker() {
             <span style={{fontSize:22,fontWeight:800,color:C.text}}>勤怠・給与管理</span>
             <span style={{fontSize:11,color:"#15803d",background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>📥 CSV対応</span>
           </div>
-          <div style={{height:1,background:`linear-gradient(90deg,${C.gold},transparent)`}}/>
+          <div style={{height:1,background:`linear-gradient(90deg,${WPC.primary},transparent)`}}/>
         </div>
 
         {/* 職場切り替え（打刻・履歴タブ時のみ） */}
@@ -417,11 +495,11 @@ export default function WorkTracker() {
           <div style={{display:"flex",gap:6,marginBottom:12}}>
             {WPS.map(wp=>(
               <button key={wp} onClick={()=>switchWP(wp)} style={{
-                flex:1,padding:"10px 8px",borderRadius:9,border:`2px solid ${activeWP===wp?C.gold:C.border}`,
-                background:activeWP===wp?C.gold:C.surface,
+                flex:1,padding:"10px 8px",borderRadius:9,border:`2px solid ${activeWP===wp?WP_COLORS[wp].primary:C.border}`,
+                background:activeWP===wp?WP_COLORS[wp].primary:C.surface,
                 color:activeWP===wp?"#fff":C.muted,
                 fontWeight:700,fontSize:14,cursor:"pointer",
-                boxShadow:activeWP===wp?"0 2px 8px rgba(184,134,11,0.3)":"none",
+                boxShadow:activeWP===wp?`0 2px 8px ${WP_COLORS[wp].shadow}`:"none",
               }}>
                 {settings.workplaces[wp]?.name||`職場${wp}`}
               </button>
@@ -442,15 +520,15 @@ export default function WorkTracker() {
         </div>
 
         {/* Summary card */}
-        <SummaryCard t={periodTotals[activeWP]} combined={combinedTotals} settings={settings} activeWP={activeWP} wpName={settings.workplaces[activeWP]?.name} C={C}/>
+        <SummaryCard t={periodTotals[activeWP]} combined={combinedTotals} settings={settings} activeWP={activeWP} wpName={settings.workplaces[activeWP]?.name} C={C} wpc={WPC}/>
 
         {/* Nav */}
         <div style={{display:"flex",gap:6,margin:"14px 0 18px"}}>
-          {[["input","✏️ 打刻"],["history","📋 履歴"],["summary","📊 集計"],["settings","⚙️ 設定"],["help","❓ 使い方"]].map(([k,label])=>(
+          {[["input","✏️ 打刻"],["shift","📅 シフト"],["history","📋 履歴"],["summary","📊 集計"],["settings","⚙️ 設定"],["help","❓ 使い方"]].map(([k,label])=>(
             <button key={k} onClick={()=>setView(k)} style={{flex:1,padding:"9px 2px",borderRadius:9,border:"none",
-              background:view===k?C.gold:C.surface,color:view===k?"#fff":C.muted,
+              background:view===k?WPC.primary:C.surface,color:view===k?"#fff":C.muted,
               fontWeight:view===k?700:500,fontSize:11,cursor:"pointer",
-              boxShadow:view===k?"0 2px 8px rgba(184,134,11,0.3)":"none"}}>{label}</button>
+              boxShadow:view===k?`0 2px 8px ${WPC.shadow}`:`none`}}>{label}</button>
           ))}
         </div>
 
@@ -496,10 +574,10 @@ export default function WorkTracker() {
             <Lbl>☕ 休憩時間</Lbl>
             {form.breaks.length===0&&<div style={{fontSize:13,color:C.dim,marginBottom:8,fontWeight:500}}>休憩なし</div>}
             {form.breaks.map((brk,i)=>(
-              <div key={i} style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:10,padding:"12px",marginBottom:8}}>
+              <div key={i} style={{background:WPC.breakBg,border:`1px solid ${WPC.breakBorder}`,borderRadius:10,padding:"12px",marginBottom:8}}>
                 <div style={{display:"flex",alignItems:"center",marginBottom:8,gap:6}}>
-                  <span style={{fontSize:13,fontWeight:600,color:C.orange}}>休憩 {i+1}</span>
-                  {brk.in&&brk.out&&<span style={{fontSize:12,color:C.orange,fontWeight:600}}>（{fmtH(toMin(brk.out)>=toMin(brk.in)?toMin(brk.out)-toMin(brk.in):toMin(brk.out)+1440-toMin(brk.in))}）</span>}
+                  <span style={{fontSize:13,fontWeight:600,color:WPC.breakColor}}>休憩 {i+1}</span>
+                  {brk.in&&brk.out&&<span style={{fontSize:12,color:WPC.breakColor,fontWeight:600}}>（{fmtH(toMin(brk.out)>=toMin(brk.in)?toMin(brk.out)-toMin(brk.in):toMin(brk.out)+1440-toMin(brk.in))}）</span>}
                   <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
                     <SaveBtn/>
                     <button onClick={()=>rmBrk(i)} style={{background:"none",border:"none",color:C.red,fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>
@@ -508,17 +586,17 @@ export default function WorkTracker() {
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                   {[["in","開始"],["out","終了"]].map(([field,lbl])=>(
                     <div key={field}>
-                      <div style={{fontSize:12,fontWeight:600,color:C.orange,marginBottom:4}}>{lbl}</div>
+                      <div style={{fontSize:12,fontWeight:600,color:WPC.breakColor,marginBottom:4}}>{lbl}</div>
                       <div style={{display:"flex",gap:4}}>
-                        <input type="time" value={brk[field]} onChange={e=>updBrk(i,field,e.target.value)} style={{...inp,flex:1,borderColor:"#fde68a"}}/>
-                        <button onClick={()=>stampBrk(i,field)} style={{...stampBtn(C),borderColor:"#fde68a",color:C.orange}}>今</button>
+                        <input type="time" value={brk[field]} onChange={e=>updBrk(i,field,e.target.value)} style={{...inp,flex:1,borderColor:WPC.breakBorder}}/>
+                        <button onClick={()=>stampBrk(i,field)} style={{...stampBtn(C),borderColor:WPC.breakBorder,color:WPC.breakColor}}>今</button>
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
             ))}
-            <button onClick={addBrk} style={{width:"100%",padding:"8px",borderRadius:8,border:"1px dashed #fcd34d",background:"#fffbeb",color:C.orange,fontSize:14,fontWeight:600,cursor:"pointer",marginBottom:16}}>＋ 休憩を追加</button>
+            <button onClick={addBrk} style={{width:"100%",padding:"8px",borderRadius:8,border:`1px dashed ${WPC.breakDash}`,background:WPC.breakBg,color:WPC.breakColor,fontSize:14,fontWeight:600,cursor:"pointer",marginBottom:16}}>＋ 休憩を追加</button>
 
             <div style={{marginBottom:16}}>
               <Lbl>メモ（任意）</Lbl>
@@ -527,7 +605,7 @@ export default function WorkTracker() {
 
             {formWage.totalMin>0&&<WageBreakdown w={formWage} rate={currentRate} C={C} compact/>}
 
-            <button onClick={handleSave} style={{width:"100%",marginTop:14,padding:"14px 0",borderRadius:10,border:"none",background:C.gold,color:"#fff",fontWeight:700,fontSize:16,cursor:"pointer"}}>
+            <button onClick={handleSave} style={{width:"100%",marginTop:14,padding:"14px 0",borderRadius:10,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:16,cursor:"pointer"}}>
               {form.id?"更新する":"記録を保存"}
             </button>
             {form.id&&<button onClick={()=>setForm(emptyForm())} style={{width:"100%",marginTop:8,padding:"10px 0",borderRadius:10,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:15,fontWeight:500,cursor:"pointer"}}>キャンセル</button>}
@@ -542,7 +620,7 @@ export default function WorkTracker() {
         {view==="history"&&(
           <div>
             <div style={{display:"flex",gap:8,marginBottom:12}}>
-              <button onClick={()=>downloadCSV(periodRecords,settings,`勤怠_${getPeriodLabel(periodKey,activeCD)}`)} style={{flex:1,padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.gold,fontWeight:700,fontSize:14,cursor:"pointer"}}>
+              <button onClick={()=>downloadCSV(periodRecords,settings,`勤怠_${getPeriodLabel(periodKey,activeCD)}`)} style={{flex:1,padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer"}}>
                 📥 この期間をCSV出力
               </button>
               <button onClick={()=>downloadCSV(records,settings,"勤怠_全期間")} style={{padding:"11px 14px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.muted,fontWeight:600,fontSize:13,cursor:"pointer"}}>全期間</button>
@@ -566,11 +644,11 @@ export default function WorkTracker() {
                           {(wpRec.segments||[]).map(s=>`${s.in||"?"}–${s.out||"勤務中"}`).join(" / ")}
                         </div>
                         {(wpRec.breaks||[]).filter(b=>b.in&&b.out).length>0&&(
-                          <div style={{fontSize:12,color:C.orange,fontWeight:500,marginTop:2}}>☕ 休憩 {fmtH(w.totalBreakMin)}</div>
+                          <div style={{fontSize:12,color:WPC.breakColor,fontWeight:500,marginTop:2}}>☕ 休憩 {fmtH(w.totalBreakMin)}</div>
                         )}
                       </div>
                       <div style={{textAlign:"right",marginRight:10}}>
-                        <div style={{color:w.totalMin===0?C.green:C.gold,fontWeight:700,fontSize:16}}>
+                        <div style={{color:w.totalMin===0?C.green:WPC.primary,fontWeight:700,fontSize:16}}>
                           {w.totalMin===0?"勤務中":fmtMoney(w.totalPay,settings.currency||"¥")}
                         </div>
                         <div style={{fontSize:12,fontWeight:500,color:C.muted}}>{w.totalMin>0?fmtH(w.totalMin):""}</div>
@@ -632,7 +710,7 @@ export default function WorkTracker() {
                           <div style={{fontSize:12,color:C.muted,marginTop:2}}>{cd===0?"月末締め":`${cd}日締め`} / 支払日 {cfg?.payDay===0?"月末":`${cfg?.payDay??10}日`}</div>
                         </div>
                         <div style={{textAlign:"right"}}>
-                          <div style={{fontSize:22,fontWeight:800,color:C.gold}}>{fmtMoney(totalPay,settings.currency||"¥")}</div>
+                          <div style={{fontSize:22,fontWeight:800,color:WP_COLORS[wp].primary}}>{fmtMoney(totalPay,settings.currency||"¥")}</div>
                           <div style={{fontSize:13,color:C.muted,fontWeight:500}}>{fmtH(totalMin)}</div>
                         </div>
                       </div>
@@ -642,7 +720,7 @@ export default function WorkTracker() {
                             <div key={date} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:`1px solid ${C.bg}`}}>
                               <span style={{fontSize:13,fontWeight:600,color:C.text}}>{dateLbl(date)}</span>
                               <div style={{textAlign:"right"}}>
-                                <span style={{fontSize:13,fontWeight:700,color:C.gold}}>{fmtMoney(w.totalPay,"¥")}</span>
+                                <span style={{fontSize:13,fontWeight:700,color:WP_COLORS[wp].primary}}>{fmtMoney(w.totalPay,"¥")}</span>
                                 <span style={{fontSize:12,color:C.dim,marginLeft:6}}>{fmtH(w.totalMin)}</span>
                               </div>
                             </div>
@@ -678,7 +756,7 @@ export default function WorkTracker() {
                         <div style={{fontSize:12,color:C.green,fontWeight:600,marginTop:2}}>支払予定日：{payDay===0?"月末":`${payDay}日`}</div>
                       </div>
                       <div style={{textAlign:"right"}}>
-                        <div style={{fontSize:22,fontWeight:800,color:C.gold}}>{fmtMoney(totalPay,settings.currency||"¥")}</div>
+                        <div style={{fontSize:22,fontWeight:800,color:WP_COLORS[wp].primary}}>{fmtMoney(totalPay,settings.currency||"¥")}</div>
                         <div style={{fontSize:13,color:C.muted,fontWeight:500}}>{fmtH(totalMin)}</div>
                       </div>
                     </div>
@@ -707,7 +785,7 @@ export default function WorkTracker() {
               return(
                 <div key={wp} style={{borderTop:`1px solid ${C.border}`,paddingTop:16,marginBottom:16}}>
                   <div style={{fontSize:15,fontWeight:800,color:C.text,marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{background:C.gold,color:"#fff",borderRadius:6,padding:"2px 10px",fontSize:13}}>{wp}</span>
+                    <span style={{background:WP_COLORS[wp].primary,color:"#fff",borderRadius:6,padding:"2px 10px",fontSize:13}}>{wp}</span>
                     <span>{cfg.name}</span>
                   </div>
                   <div style={{marginBottom:10}}>
@@ -735,19 +813,19 @@ export default function WorkTracker() {
                   {[...(cfg.rateHistory||[])].sort((a,b)=>b.from.localeCompare(a.from)).map(r=>(
                     <div key={r.from} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#f3f4f6",borderRadius:8,marginBottom:6}}>
                       <span style={{fontSize:14,fontWeight:600}}>{r.from}〜</span>
-                      <span style={{fontSize:15,fontWeight:700,color:C.gold}}>¥{Number(r.rate).toLocaleString()}</span>
+                      <span style={{fontSize:15,fontWeight:700,color:WP_COLORS[wp].primary}}>¥{Number(r.rate).toLocaleString()}</span>
                       <button onClick={()=>{
                         if((cfg.rateHistory||[]).length<=1){showToast("最低1件の時給が必要です","err");return;}
                         updateWP("rateHistory",(cfg.rateHistory||[]).filter(x=>x.from!==r.from));
                       }} style={{background:"none",border:"none",color:C.red,fontSize:16,cursor:"pointer"}}>×</button>
                     </div>
                   ))}
-                  <AddRateForm cfg={cfg} updateWP={updateWP} inp={inp} C={C}/>
+                  <AddRateForm cfg={cfg} updateWP={updateWP} inp={inp} C={C} wp={wp}/>
                 </div>
               );
             })}
 
-            <button onClick={handleSettingsSave} style={{width:"100%",padding:"13px 0",borderRadius:10,border:"none",background:C.gold,color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",marginBottom:20}}>設定を保存</button>
+            <button onClick={handleSettingsSave} style={{width:"100%",padding:"13px 0",borderRadius:10,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",marginBottom:20}}>設定を保存</button>
 
             <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16}}>
               <Lbl>📥 データ管理</Lbl>
@@ -757,7 +835,7 @@ export default function WorkTracker() {
                 📂 CSVを修正して再取込も可能<br/>
                 🔄 アプリを開くたびに自動バックアップ
               </div>
-              <button onClick={()=>downloadCSV(records,settings,"勤怠_全データバックアップ")} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.gold,fontWeight:700,fontSize:14,cursor:"pointer",marginBottom:8}}>
+              <button onClick={()=>downloadCSV(records,settings,"勤怠_全データバックアップ")} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer",marginBottom:8}}>
                 📥 全データをCSVバックアップ
               </button>
               <button onClick={()=>importRef.current.click()} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.blue,fontWeight:700,fontSize:14,cursor:"pointer"}}>
@@ -766,6 +844,24 @@ export default function WorkTracker() {
               <input ref={importRef} type="file" accept=".csv" onChange={handleImport} style={{display:"none"}}/>
             </div>
           </div>
+        )}
+
+
+        {/* ── SHIFT ───────────────────────────────────────────────────────── */}
+        {view==="shift"&&(
+          <ShiftTab
+            shifts={shifts} setShifts={setShifts}
+            patterns={patterns} setPatterns={setPatterns}
+            settings={settings}
+            shiftView={shiftView} setShiftView={setShiftView}
+            shiftMonth={shiftMonth} setShiftMonth={setShiftMonth}
+            shiftWP={shiftWP} setShiftWP={setShiftWP}
+            editShift={editShift} setEditShift={setEditShift}
+            editPattern={editPattern} setEditPattern={setEditPattern}
+            records={records}
+            C={C} WPC={WPC} WP_COLORS={WP_COLORS}
+            showToast={showToast}
+          />
         )}
 
         {/* ── HELP ────────────────────────────────────────────────────────── */}
@@ -779,15 +875,18 @@ export default function WorkTracker() {
                 {n:"4",h:"集計タブで給与確認",p:"締め日別・支払月別の両職場合算が確認できます。"},
               ].map((s,i)=>(
                 <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start",marginBottom:12}}>
-                  <div style={{background:C.gold,color:"#fff",fontWeight:800,fontSize:13,width:28,height:28,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{s.n}</div>
+                  <div style={{background:WPC.primary,color:"#fff",fontWeight:800,fontSize:13,width:28,height:28,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{s.n}</div>
                   <div><div style={{fontSize:14,fontWeight:700,marginBottom:3}}>{s.h}</div><div style={{fontSize:13,color:C.muted}}>{s.p}</div></div>
                 </div>
               ))}
             </HelpSection>
             <HelpSection title="💰 給与計算ルール" C={C}>
               <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:"6px 16px",fontSize:13}}>
-                {[["通常時間（〜8h）","× 1.00"],["残業（8h超）","× 1.25"],["深夜（22時〜翌5時）","× 1.25"],["深夜残業（両方）","× 1.50"]].map(([k,v])=>(
-                  <><div key={k} style={{color:C.muted}}>{k}</div><div style={{fontWeight:700,color:C.gold,textAlign:"right"}}>{v}</div></>
+                {[["通常時間（〜8h）","× 1.00"],["残業（8h超）","× 1.25"],["深夜（22時〜翌5時）","× 1.25"],["深夜残業（両方）","× 1.50"]].map(([k,v],i)=>(
+                  <React.Fragment key={i}>
+                    <div style={{color:C.muted}}>{k}</div>
+                    <div style={{fontWeight:700,color:C.gold,textAlign:"right"}}>{v}</div>
+                  </React.Fragment>
                 ))}
               </div>
             </HelpSection>
@@ -816,7 +915,7 @@ export default function WorkTracker() {
 }
 
 // ─── Sub Components ───────────────────────────────────────────────────────────
-function AddRateForm({cfg,updateWP,inp,C}){
+function AddRateForm({cfg,updateWP,inp,C,wp}){
   const [from,setFrom]=useState(getTodayStr());
   const [rate,setRate]=useState(cfg.rateHistory?.[cfg.rateHistory.length-1]?.rate||1200);
   return(
@@ -827,7 +926,7 @@ function AddRateForm({cfg,updateWP,inp,C}){
         if(!from||!rate)return;
         const updated=[...(cfg.rateHistory||[]).filter(r=>r.from!==from),{from,rate:Number(rate)}].sort((a,b)=>a.from.localeCompare(b.from));
         updateWP("rateHistory",updated);
-      }} style={{padding:"9px 14px",borderRadius:8,border:"none",background:C.gold,color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer"}}>追加</button>
+      }} style={{padding:"9px 14px",borderRadius:8,border:"none",background:WP_COLORS[wp||"A"].primary,color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer"}}>追加</button>
     </div>
   );
 }
@@ -837,14 +936,15 @@ function Lbl({children}){return <div style={{fontSize:13,fontWeight:600,color:"#
 function HelpSection({title,children,C}){
   return(
     <div style={{marginBottom:20}}>
-      <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px solid ${C.gold}`}}>{title}</div>
+      <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px solid ${WPC.primary}`}}>{title}</div>
       {children}
     </div>
   );
 }
 
-function SummaryCard({t,combined,settings,activeWP,wpName,C}){
+function SummaryCard({t,combined,settings,activeWP,wpName,C,wpc}){
   const cur=settings.currency||"¥";
+  const wpColor=wpc||WP_COLORS[activeWP];
   const rows=[
     {label:"通常時間",min:t.nm,pay:t.normalPay,color:C.text},
     {label:"残業手当",min:t.om,pay:t.otPay,color:C.ot},
@@ -852,12 +952,12 @@ function SummaryCard({t,combined,settings,activeWP,wpName,C}){
     {label:"深夜残業",min:t.lno,pay:t.lnoPay,color:C.lno},
   ].filter(r=>r.min>0);
   return(
-    <div style={{background:"linear-gradient(135deg,#fff8ee,#ffffff)",border:"1px solid #d0d4db",borderRadius:16,padding:"18px 18px 14px",position:"relative",overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)",marginBottom:6}}>
+    <div style={{background:`linear-gradient(${wpColor.gradient})`,border:`1px solid ${wpColor.border}`,borderRadius:16,padding:"18px 18px 14px",position:"relative",overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.06)",marginBottom:6}}>
       <div style={{position:"absolute",top:-30,right:-30,width:120,height:120,borderRadius:"50%",background:"rgba(184,134,11,0.06)"}}/>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
         <div>
           <div style={{fontSize:11,fontWeight:600,color:C.muted,letterSpacing:"1px",marginBottom:2}}>{wpName}（今期）</div>
-          <div style={{fontSize:30,fontWeight:800,color:C.gold,letterSpacing:"-1px"}}>{cur}{Math.round(t.totalPay).toLocaleString()}</div>
+          <div style={{fontSize:30,fontWeight:800,color:wpColor.primary,letterSpacing:"-1px"}}>{cur}{Math.round(t.totalPay).toLocaleString()}</div>
           {combined.totalPay!==t.totalPay&&(
             <div style={{fontSize:12,color:C.muted,fontWeight:500,marginTop:2}}>両職場合計：{cur}{Math.round(combined.totalPay).toLocaleString()}</div>
           )}
@@ -873,11 +973,11 @@ function SummaryCard({t,combined,settings,activeWP,wpName,C}){
           <div style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:"4px 10px",alignItems:"center"}}>
             {["区分","時間","金額"].map(h=><div key={h} style={{fontSize:12,fontWeight:600,color:C.dim,paddingBottom:2}}>{h}</div>)}
             {rows.map((r,i)=>(
-              <div key={i} style={{display:"contents"}}>
+              <React.Fragment key={i}>
                 <div style={{fontSize:13,fontWeight:600,color:r.color}}>{r.label}</div>
                 <div style={{fontSize:13,fontWeight:500,color:C.muted,textAlign:"right"}}>{fmtH(r.min)}</div>
                 <div style={{fontSize:14,fontWeight:700,color:r.color,textAlign:"right"}}>{cur}{Math.round(r.pay).toLocaleString()}</div>
-              </div>
+              </React.Fragment>
             ))}
           </div>
         </div>
@@ -900,12 +1000,12 @@ function WageBreakdown({w,rate,C,compact}){
       <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto",gap:"4px 10px",alignItems:"center"}}>
         {["区分","時間","単価","金額"].map(h=><div key={h} style={{fontSize:12,fontWeight:600,color:C.dim,paddingBottom:2}}>{h}</div>)}
         {rows.map((r,i)=>(
-          <div key={i} style={{display:"contents"}}>
+          <React.Fragment key={i}>
             <div style={{fontSize:13,fontWeight:600,color:r.color}}>{r.label}</div>
             <div style={{fontSize:13,fontWeight:500,color:C.muted,textAlign:"right"}}>{fmtH(r.min)}</div>
             <div style={{fontSize:12,fontWeight:500,color:C.dim,textAlign:"right"}}>¥{r.r.toLocaleString()}</div>
             <div style={{fontSize:14,fontWeight:700,color:r.color,textAlign:"right"}}>¥{Math.round(r.pay).toLocaleString()}</div>
-          </div>
+          </React.Fragment>
         ))}
         <div style={{fontSize:14,fontWeight:700,color:C.gold,borderTop:`1px solid ${C.border}`,paddingTop:6,marginTop:2}}>合計</div>
         <div style={{fontSize:13,fontWeight:600,color:C.gold,textAlign:"right",borderTop:`1px solid ${C.border}`,paddingTop:6}}>{fmtH(w.totalMin)}</div>
@@ -918,3 +1018,455 @@ function WageBreakdown({w,rate,C,compact}){
 
 function arrowBtn(C){return{background:"none",border:`1px solid ${C.border}`,borderRadius:8,color:C.muted,fontSize:20,width:36,height:36,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700};}
 function stampBtn(C){return{background:"#fff",border:`1px solid ${C.border}`,borderRadius:7,color:C.text,fontSize:13,fontWeight:600,padding:"0 10px",cursor:"pointer",flexShrink:0,whiteSpace:"nowrap"};}
+
+// ─── ShiftTab Component ───────────────────────────────────────────────────────
+function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setShiftView,
+  shiftMonth,setShiftMonth,shiftWP,setShiftWP,editShift,setEditShift,
+  editPattern,setEditPattern,records,C,WPC,WP_COLORS,showToast}) {
+
+  const cur = settings.currency||"¥";
+  const wpColors = WP_COLORS[shiftWP];
+  const wpCfg = settings.workplaces[shiftWP];
+  const wpPatterns = patterns[shiftWP]||[];
+
+  // 月カレンダー生成
+  const [y,m] = shiftMonth.split("-").map(Number);
+  const firstDay = new Date(y,m-1,1).getDay();
+  const daysInMonth = new Date(y,m,0).getDate();
+  const calDays = [];
+  for(let i=0;i<firstDay;i++) calDays.push(null);
+  for(let d=1;d<=daysInMonth;d++) calDays.push(d);
+
+  const dateStr = (d) => `${y}-${pad(m)}-${pad(d)}`;
+  const getShift = (d) => shifts.find(s=>s.date===dateStr(d)&&s.wp===shiftWP);
+  const getRecord = (d) => records.find(r=>r.date===dateStr(d)&&r[shiftWP]&&(r[shiftWP].segments||[]).some(s=>s.in||s.out));
+
+  // 月間見込み集計
+  const monthSummary = useMemo(()=>{
+    let totalPay=0, totalMin=0;
+    for(let d=1;d<=daysInMonth;d++){
+      const s=getShift(d);
+      if(!s) continue;
+      const rate=getRateForDate(dateStr(d),wpCfg?.rateHistory||[]);
+      const w=calcShiftPay(s.segments||[],s.breakMin||0,s.lateNightBreak||false,rate);
+      totalPay+=w.totalPay; totalMin+=w.totalMin;
+    }
+    return{totalPay,totalMin};
+  },[shifts,shiftWP,shiftMonth]);
+
+  // 実績との差額
+  const actualSummary = useMemo(()=>{
+    let totalPay=0, totalMin=0;
+    for(let d=1;d<=daysInMonth;d++){
+      const r=getRecord(d);
+      if(!r) continue;
+      const rate=getRateForDate(dateStr(d),wpCfg?.rateHistory||[]);
+      const w=calcWage(r[shiftWP].segments||[],r[shiftWP].breaks||[],rate);
+      totalPay+=w.totalPay; totalMin+=w.totalMin;
+    }
+    return{totalPay,totalMin};
+  },[records,shiftWP,shiftMonth]);
+
+  // シフト保存
+  const saveShift=(sh)=>{
+    setShifts(prev=>{
+      const filtered=prev.filter(s=>!(s.date===sh.date&&s.wp===sh.wp));
+      return [...filtered,sh];
+    });
+    setEditShift(null);
+    showToast("シフトを保存しました");
+  };
+  const deleteShift=(date,wp)=>{
+    setShifts(prev=>prev.filter(s=>!(s.date===date&&s.wp===wp)));
+    setEditShift(null);
+    showToast("削除しました");
+  };
+
+  // パターン保存
+  const savePattern=(pat)=>{
+    setPatterns(prev=>{
+      const list=prev[shiftWP]||[];
+      const exists=list.find(p=>p.id===pat.id);
+      const updated=exists?list.map(p=>p.id===pat.id?pat:p):[...list,pat];
+      return{...prev,[shiftWP]:updated};
+    });
+    setEditPattern(null);
+    showToast("パターンを保存しました");
+  };
+  const deletePattern=(id)=>{
+    setPatterns(prev=>({...prev,[shiftWP]:(prev[shiftWP]||[]).filter(p=>p.id!==id)}));
+    setEditPattern(null);
+    showToast("パターンを削除しました");
+  };
+
+  // CSV出力
+  const downloadShiftCSV=()=>{
+    const csv=generateShiftCSV(shifts,patterns,settings);
+    const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download=`シフト予定_${shiftMonth}.csv`;a.click();
+    URL.revokeObjectURL(url);
+    showToast("シフトCSVを出力しました");
+  };
+
+  const inp2={background:"#f9fafb",border:`1px solid ${C.border}`,borderRadius:8,
+    color:C.text,fontSize:15,fontWeight:500,padding:"8px 10px",outline:"none",
+    fontFamily:"inherit",boxSizing:"border-box",width:"100%"};
+
+  return(
+    <div>
+      {/* 職場切り替え */}
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        {["A","B"].map(wp=>(
+          <button key={wp} onClick={()=>setShiftWP(wp)} style={{
+            flex:1,padding:"10px 8px",borderRadius:9,
+            border:`2px solid ${shiftWP===wp?WP_COLORS[wp].primary:C.border}`,
+            background:shiftWP===wp?WP_COLORS[wp].primary:C.surface,
+            color:shiftWP===wp?"#fff":C.muted,
+            fontWeight:700,fontSize:14,cursor:"pointer",
+          }}>{settings.workplaces[wp]?.name||`職場${wp}`}</button>
+        ))}
+      </div>
+
+      {/* サブナビ */}
+      <div style={{display:"flex",gap:6,marginBottom:14}}>
+        {[["calendar","📅 カレンダー"],["patterns","⚙️ パターン設定"]].map(([k,lbl])=>(
+          <button key={k} onClick={()=>setShiftView(k)} style={{
+            flex:1,padding:"9px 4px",borderRadius:9,border:"none",
+            background:shiftView===k?wpColors.primary:C.surface,
+            color:shiftView===k?"#fff":C.muted,
+            fontWeight:shiftView===k?700:500,fontSize:13,cursor:"pointer",
+          }}>{lbl}</button>
+        ))}
+        <button onClick={downloadShiftCSV} style={{padding:"9px 12px",borderRadius:9,border:`1px solid ${C.border}`,background:C.surface,color:C.muted,fontSize:12,fontWeight:600,cursor:"pointer"}}>CSV</button>
+      </div>
+
+      {/* ── カレンダービュー ── */}
+      {shiftView==="calendar"&&(
+        <div>
+          {/* 月ナビ */}
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"10px 14px"}}>
+            <button onClick={()=>setShiftMonth(k=>shiftPeriod(k,-1))} style={arrowBtn(C)}>‹</button>
+            <div style={{flex:1,textAlign:"center",fontSize:16,fontWeight:700}}>{y}年{m}月</div>
+            <button onClick={()=>setShiftMonth(k=>shiftPeriod(k,1))} style={arrowBtn(C)}>›</button>
+          </div>
+
+          {/* 見込み収入サマリー */}
+          <div style={{background:`linear-gradient(${wpColors.gradient})`,border:`1px solid ${wpColors.border}`,borderRadius:12,padding:"14px 16px",marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:2}}>見込み収入（{wpCfg?.name}）</div>
+                <div style={{fontSize:26,fontWeight:800,color:wpColors.primary}}>{cur}{Math.round(monthSummary.totalPay).toLocaleString()}</div>
+                <div style={{fontSize:12,color:C.muted,marginTop:2}}>{fmtH(monthSummary.totalMin)}</div>
+              </div>
+              {actualSummary.totalPay>0&&(
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:2}}>実績</div>
+                  <div style={{fontSize:18,fontWeight:700,color:C.green}}>{cur}{Math.round(actualSummary.totalPay).toLocaleString()}</div>
+                  <div style={{fontSize:12,fontWeight:600,color:Math.round(actualSummary.totalPay-monthSummary.totalPay)>=0?"#16a34a":"#dc2626",marginTop:2}}>
+                    差額 {actualSummary.totalPay>=monthSummary.totalPay?"+":""}{cur}{Math.round(actualSummary.totalPay-monthSummary.totalPay).toLocaleString()}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* カレンダーグリッド */}
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",background:"#f3f4f6"}}>
+              {["日","月","火","水","木","金","土"].map((d,i)=>(
+                <div key={d} style={{textAlign:"center",padding:"8px 2px",fontSize:12,fontWeight:700,
+                  color:i===0?"#dc2626":i===6?"#2563eb":"#6b7280"}}>{d}</div>
+              ))}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,background:C.border}}>
+              {calDays.map((d,i)=>{
+                if(!d) return <div key={`e${i}`} style={{background:C.bg,minHeight:56}}/>;
+                const sh=getShift(d);
+                const rec=getRecord(d);
+                const today=dateStr(d)===new Date().toISOString().slice(0,10);
+                const dow=new Date(y,m-1,d).getDay();
+                return(
+                  <div key={d} onClick={()=>setEditShift({date:dateStr(d),wp:shiftWP,existing:sh})}
+                    style={{background:sh?wpColors.light:C.surface,minHeight:56,padding:"4px",cursor:"pointer",
+                      border:today?`2px solid ${wpColors.primary}`:"none",boxSizing:"border-box"}}>
+                    <div style={{fontSize:12,fontWeight:700,color:today?wpColors.primary:dow===0?"#dc2626":dow===6?"#2563eb":"#374151",marginBottom:2}}>{d}</div>
+                    {sh&&(
+                      <div style={{fontSize:10,fontWeight:600,color:wpColors.primary,lineHeight:1.3}}>
+                        <div>{sh.segments?.[0]?.in||""}〜{sh.segments?.[0]?.out||""}</div>
+                        {sh.segments?.[1]?.in&&<div style={{color:C.muted}}>{sh.segments[1].in}〜{sh.segments[1].out}</div>}
+                        {sh.breakMin>0&&<div style={{color:C.muted}}>休{sh.breakMin}分</div>}
+                      </div>
+                    )}
+                    {rec&&<div style={{fontSize:10,fontWeight:700,color:C.green,marginTop:1}}>✓実績</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── パターン設定ビュー ── */}
+      {shiftView==="patterns"&&(
+        <div>
+          {wpPatterns.length===0&&(
+            <div style={{textAlign:"center",padding:"30px 0",color:C.dim,fontSize:14}}>パターンがまだありません</div>
+          )}
+          {wpPatterns.map(pat=>(
+            <div key={pat.id} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px",marginBottom:8,cursor:"pointer"}}
+              onClick={()=>setEditPattern({...pat})}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:15,fontWeight:700,color:C.text}}>{pat.name}</div>
+                  <div style={{fontSize:13,color:C.muted,marginTop:3}}>
+                    {pat.segments?.[0]?.in}〜{pat.segments?.[0]?.out}
+                    {pat.segments?.[1]?.in&&` / ${pat.segments[1].in}〜${pat.segments[1].out}`}
+                  </div>
+                  <div style={{fontSize:12,color:C.dim,marginTop:2}}>
+                    {pat.breakMin>0?`休憩 ${pat.breakMin}分${pat.lateNightBreak?" (深夜帯)":""}`:""} 
+                  </div>
+                </div>
+                <div style={{fontSize:12,fontWeight:600,color:wpColors.primary}}>編集 ›</div>
+              </div>
+            </div>
+          ))}
+          <button onClick={()=>setEditPattern({id:Date.now().toString(),name:"",segments:[{in:"",out:""}],breakMin:0,lateNightBreak:false,wp:shiftWP})}
+            style={{width:"100%",padding:"11px",borderRadius:10,border:`1px dashed ${wpColors.border}`,background:wpColors.light,color:wpColors.primary,fontWeight:700,fontSize:14,cursor:"pointer",marginTop:4}}>
+            ＋ パターンを追加
+          </button>
+        </div>
+      )}
+
+      {/* ── シフト編集モーダル ── */}
+      {editShift&&(
+        <ShiftEditModal
+          dateInfo={editShift} wp={shiftWP} wpCfg={wpCfg} wpPatterns={wpPatterns}
+          wpColors={wpColors} C={C} inp={inp2}
+          onSave={saveShift} onDelete={deleteShift} onClose={()=>setEditShift(null)}
+          calcShiftPay={calcShiftPay} getRateForDate={getRateForDate}
+        />
+      )}
+
+      {/* ── パターン編集モーダル ── */}
+      {editPattern&&(
+        <PatternEditModal
+          pattern={editPattern} wpColors={wpColors} C={C} inp={inp2}
+          onSave={savePattern} onDelete={deletePattern} onClose={()=>setEditPattern(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── ShiftEditModal ───────────────────────────────────────────────────────────
+function ShiftEditModal({dateInfo,wp,wpCfg,wpPatterns,wpColors,C,inp,onSave,onDelete,onClose,calcShiftPay,getRateForDate}){
+  const existing = dateInfo.existing;
+  const [segments,setSegments]=useState(existing?.segments||[{in:"",out:""}]);
+  const [breakMin,setBreakMin]=useState(existing?.breakMin||0);
+  const [lateNightBreak,setLateNightBreak]=useState(existing?.lateNightBreak||false);
+  const [memo,setMemo]=useState(existing?.memo||"");
+  const [patternId,setPatternId]=useState(existing?.patternId||"");
+
+  const rate=getRateForDate(dateInfo.date,wpCfg?.rateHistory||[]);
+  const preview=calcShiftPay(segments,breakMin,lateNightBreak,rate);
+  const d=new Date(dateInfo.date+"T00:00:00");
+  const days=["日","月","火","水","木","金","土"];
+  const dow=days[d.getDay()];
+
+  const applyPattern=(pat)=>{
+    setSegments(pat.segments.map(s=>({...s})));
+    setBreakMin(pat.breakMin||0);
+    setLateNightBreak(pat.lateNightBreak||false);
+    setPatternId(pat.id);
+  };
+
+  const addSeg=()=>{if(segments.length<2)setSegments(s=>[...s,{in:"",out:""}]);};
+  const rmSeg=(i)=>setSegments(s=>s.filter((_,idx)=>idx!==i));
+  const updSeg=(i,f,v)=>setSegments(s=>{const n=[...s];n[i]={...n[i],[f]:v};return n;});
+
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:300}}>
+      <div style={{background:"#fff",borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,maxHeight:"85vh",overflowY:"auto",padding:"20px 16px 32px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <div style={{fontSize:17,fontWeight:800}}>{dateInfo.date}（{dow}）</div>
+          <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:C.muted}}>✕</button>
+        </div>
+
+        {/* パターン選択 */}
+        {wpPatterns.length>0&&(
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:6}}>パターンから選択</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+              {wpPatterns.map(pat=>(
+                <button key={pat.id} onClick={()=>applyPattern(pat)} style={{
+                  padding:"6px 14px",borderRadius:20,border:`1px solid ${patternId===pat.id?wpColors.primary:C.border}`,
+                  background:patternId===pat.id?wpColors.primary:"#fff",
+                  color:patternId===pat.id?"#fff":C.muted,fontWeight:600,fontSize:13,cursor:"pointer"
+                }}>{pat.name}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 区間入力 */}
+        {segments.map((seg,i)=>(
+          <div key={i} style={{background:"#f3f4f6",borderRadius:10,padding:"12px",marginBottom:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:13,fontWeight:600,color:C.muted}}>区間 {i+1}{i>0?" (中抜け後)":""}</span>
+              {i>0&&<button onClick={()=>rmSeg(i)} style={{background:"none",border:"none",color:"#dc2626",fontSize:16,cursor:"pointer"}}>✕</button>}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {[["in","🟢 出勤"],["out","🔴 退勤"]].map(([f,lbl])=>(
+                <div key={f}>
+                  <div style={{fontSize:12,fontWeight:600,color:C.muted,marginBottom:4}}>{lbl}</div>
+                  <input type="time" value={seg[f]} onChange={e=>updSeg(i,f,e.target.value)} style={inp}/>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {segments.length<2&&(
+          <button onClick={addSeg} style={{width:"100%",padding:"8px",borderRadius:8,border:`1px dashed ${C.border}`,background:"none",color:C.muted,fontSize:13,cursor:"pointer",marginBottom:10}}>＋ 中抜け区間を追加</button>
+        )}
+
+        {/* 休憩 */}
+        <div style={{background:"#f9fafb",borderRadius:10,padding:"12px",marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:8}}>☕ 休憩時間</div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+            <input type="number" min={0} max={120} step={5} value={breakMin}
+              onChange={e=>setBreakMin(Number(e.target.value))}
+              style={{...inp,width:80}} placeholder="0"/>
+            <span style={{fontSize:14,color:C.muted,fontWeight:500}}>分（0=休憩なし）</span>
+          </div>
+          {breakMin>0&&(
+            <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.muted}}>
+              <input type="checkbox" checked={lateNightBreak} onChange={e=>setLateNightBreak(e.target.checked)}
+                style={{width:16,height:16,cursor:"pointer",accentColor:wpColors.primary}}/>
+              深夜帯（22時〜翌5時）に休憩を取る
+            </label>
+          )}
+        </div>
+
+        {/* メモ */}
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:6}}>メモ（任意）</div>
+          <input type="text" value={memo} onChange={e=>setMemo(e.target.value)} placeholder="業務内容など" style={inp}/>
+        </div>
+
+        {/* プレビュー */}
+        {preview.totalMin>0&&(
+          <div style={{background:`linear-gradient(${wpColors.gradient})`,border:`1px solid ${wpColors.border}`,borderRadius:10,padding:"12px",marginBottom:14}}>
+            <div style={{fontSize:12,color:C.muted,fontWeight:600,marginBottom:6}}>見込み給与（時給¥{rate.toLocaleString()}）</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:"3px 12px",fontSize:13}}>
+              {[
+                ["通常",preview.nm,preview.normalPay],
+                ["残業×1.25",preview.om,preview.otPay],
+                ["深夜×1.25",preview.ln,preview.lnPay],
+                ["深夜残業×1.50",preview.lno,preview.lnoPay],
+              ].filter(r=>r[1]>0).map(([lbl,min,pay],i)=>(
+                <React.Fragment key={i}>
+                  <div style={{color:C.muted}}>{lbl} {fmtH(min)}</div>
+                  <div style={{fontWeight:700,color:wpColors.primary,textAlign:"right"}}>¥{Math.round(pay).toLocaleString()}</div>
+                </React.Fragment>
+              ))}
+            </div>
+            <div style={{borderTop:`1px solid ${wpColors.border}`,marginTop:8,paddingTop:8,display:"flex",justifyContent:"space-between"}}>
+              <span style={{fontSize:14,fontWeight:700,color:wpColors.primary}}>合計 {fmtH(preview.totalMin)}</span>
+              <span style={{fontSize:16,fontWeight:800,color:wpColors.primary}}>¥{Math.round(preview.totalPay).toLocaleString()}</span>
+            </div>
+          </div>
+        )}
+
+        <button onClick={()=>onSave({date:dateInfo.date,wp,segments,breakMin,lateNightBreak,memo,patternId})}
+          style={{width:"100%",padding:"13px",borderRadius:10,border:"none",background:wpColors.primary,color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",marginBottom:8}}>
+          シフトを保存
+        </button>
+        {existing&&(
+          <button onClick={()=>onDelete(dateInfo.date,wp)}
+            style={{width:"100%",padding:"11px",borderRadius:10,border:"1px solid #fecaca",background:"none",color:"#dc2626",fontWeight:600,fontSize:14,cursor:"pointer"}}>
+            このシフトを削除
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── PatternEditModal ─────────────────────────────────────────────────────────
+function PatternEditModal({pattern,wpColors,C,inp,onSave,onDelete,onClose}){
+  const [name,setName]=useState(pattern.name||"");
+  const [segments,setSegments]=useState(pattern.segments||[{in:"",out:""}]);
+  const [breakMin,setBreakMin]=useState(pattern.breakMin||0);
+  const [lateNightBreak,setLateNightBreak]=useState(pattern.lateNightBreak||false);
+
+  const isNew=!pattern.name;
+  const updSeg=(i,f,v)=>setSegments(s=>{const n=[...s];n[i]={...n[i],[f]:v};return n;});
+  const addSeg=()=>{if(segments.length<2)setSegments(s=>[...s,{in:"",out:""}]);};
+  const rmSeg=(i)=>setSegments(s=>s.filter((_,idx)=>idx!==i));
+
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:300}}>
+      <div style={{background:"#fff",borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,maxHeight:"80vh",overflowY:"auto",padding:"20px 16px 32px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <div style={{fontSize:17,fontWeight:800}}>{isNew?"パターンを追加":"パターンを編集"}</div>
+          <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:C.muted}}>✕</button>
+        </div>
+
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:6}}>パターン名</div>
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="例：早番、遅番、中抜け" style={inp}/>
+        </div>
+
+        {segments.map((seg,i)=>(
+          <div key={i} style={{background:"#f3f4f6",borderRadius:10,padding:"12px",marginBottom:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:13,fontWeight:600,color:C.muted}}>区間 {i+1}{i>0?" (中抜け後)":""}</span>
+              {i>0&&<button onClick={()=>rmSeg(i)} style={{background:"none",border:"none",color:"#dc2626",fontSize:16,cursor:"pointer"}}>✕</button>}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {[["in","🟢 出勤"],["out","🔴 退勤"]].map(([f,lbl])=>(
+                <div key={f}>
+                  <div style={{fontSize:12,fontWeight:600,color:C.muted,marginBottom:4}}>{lbl}</div>
+                  <input type="time" value={seg[f]} onChange={e=>updSeg(i,f,e.target.value)} style={inp}/>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {segments.length<2&&(
+          <button onClick={addSeg} style={{width:"100%",padding:"8px",borderRadius:8,border:`1px dashed ${C.border}`,background:"none",color:C.muted,fontSize:13,cursor:"pointer",marginBottom:10}}>＋ 中抜け区間を追加</button>
+        )}
+
+        <div style={{background:"#f9fafb",borderRadius:10,padding:"12px",marginBottom:16}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:8}}>☕ 休憩時間</div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+            <input type="number" min={0} max={120} step={5} value={breakMin}
+              onChange={e=>setBreakMin(Number(e.target.value))}
+              style={{...inp,width:80}}/>
+            <span style={{fontSize:14,color:C.muted}}>分（0=休憩なし）</span>
+          </div>
+          {breakMin>0&&(
+            <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.muted}}>
+              <input type="checkbox" checked={lateNightBreak} onChange={e=>setLateNightBreak(e.target.checked)}
+                style={{width:16,height:16,cursor:"pointer",accentColor:wpColors.primary}}/>
+              深夜帯（22時〜翌5時）に休憩を取る
+            </label>
+          )}
+        </div>
+
+        <button onClick={()=>{ if(!name.trim())return; onSave({...pattern,name,segments,breakMin,lateNightBreak}); }}
+          style={{width:"100%",padding:"13px",borderRadius:10,border:"none",background:wpColors.primary,color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",marginBottom:8}}>
+          {isNew?"追加する":"更新する"}
+        </button>
+        {!isNew&&(
+          <button onClick={()=>onDelete(pattern.id)}
+            style={{width:"100%",padding:"11px",borderRadius:10,border:"1px solid #fecaca",background:"none",color:"#dc2626",fontWeight:600,fontSize:14,cursor:"pointer"}}>
+            このパターンを削除
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
