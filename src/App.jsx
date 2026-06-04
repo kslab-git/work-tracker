@@ -226,7 +226,7 @@ export default function WorkTracker() {
     }catch{return DEFAULT_SETTINGS;}
   });
   const [shifts,setShifts]=useState(()=>{try{return JSON.parse(localStorage.getItem(SHIFT_KEY))||[];}catch{return[];}});
-  const [patterns,setPatterns]=useState(()=>{try{return JSON.parse(localStorage.getItem(PATTERNS_KEY))||{A:[],B:[]};}catch{return{A:[],B:[];};}});
+  const [patterns,setPatterns]=useState(()=>{try{return JSON.parse(localStorage.getItem(PATTERNS_KEY))||{A:[],B:[]};}catch{return{A:[],B:[]};}});
   const [shiftView,setShiftView]=useState("calendar");
   const [shiftMonth,setShiftMonth]=useState(()=>{const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}`;});
   const [shiftWP,setShiftWP]=useState("A");
