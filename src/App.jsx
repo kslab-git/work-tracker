@@ -208,8 +208,8 @@ function generateShiftCSV(shifts, patterns, settings) {
       Math.round(w.totalPay), s.memo||""
     ];
   });
-  const csv = [header,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("
-");
+  const csv = [header,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+
   return BOM + csv;
 }
 
