@@ -254,6 +254,8 @@ export default function WorkTracker() {
   const [toast,setToast]=useState({msg:"",type:"ok"});
   const [expandedDay,setExpandedDay]=useState(null);
   const [warnings,setWarnings]=useState([]);
+  const [iosGuide,setIosGuide]=useState(null); // "export" | "import" | null
+  const pendingActionRef=useRef(null);
   const [settingsForm,setSettingsForm]=useState(()=>JSON.parse(JSON.stringify(settings)));
   const importRef=useRef();
 
@@ -348,7 +350,7 @@ export default function WorkTracker() {
   const handleSave=()=>{
     if(!form.segments.some(s=>s.in||s.out)) return;
     const brkWarns=form.breaks.map((b,i)=>(!b.in&&b.out)?`休憩${i+1}：開始時間が未入力です`:null).filter(Boolean);
-    if(brkWarns.length>0){setWarnings(brkWarns);setTimeout(()=>setWarnings([]),4000);}
+    if(brkWarns.length>0){setWarnings(brkWarns);setTimeout(()=>setWarnings([]),4000);return;}
 
     const wp=form.wp||activeWP;
     let updatedRecords,toastMsg="保存しました";
@@ -447,9 +449,7 @@ export default function WorkTracker() {
     color:C.text,fontSize:16,fontWeight:500,padding:"9px 12px",outline:"none",
     fontFamily:"inherit",boxSizing:"border-box",width:"100%"};
 
-  const SaveBtn=({label="保存"})=>(
-    <button onClick={handleSave} style={{padding:"4px 10px",borderRadius:7,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer"}}>{label}</button>
-  );
+  // SaveBtn removed — replaced by floating save button
 
   // ─── Summary: 支払月別 ────────────────────────────────────────────────────
   const payMonthSummary=useMemo(()=>{
@@ -479,7 +479,62 @@ export default function WorkTracker() {
       fontFamily:"'Noto Sans JP','Hiragino Kaku Gothic ProN',sans-serif",
       display:"flex",flexDirection:"column",alignItems:"center",paddingBottom:60}}>
 
-      {/* Toast */}
+      {/* iOS Safari CSV ガイドモーダル */}
+      {iosGuide&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:400}}>
+          <div style={{background:"#fff",borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,padding:"24px 20px 36px"}}>
+            {iosGuide==="export"&&(
+              <>
+                <div style={{fontSize:18,fontWeight:800,marginBottom:4}}>📥 CSVの保存方法</div>
+                <div style={{fontSize:13,color:"#6b7280",marginBottom:20}}>iPhone Safari での手順</div>
+                {[
+                  {n:"1",t:"「出力する」をタップ",d:"下のボタンを押すとCSVのプレビュー画面が開きます"},
+                  {n:"2",t:"「その他...」をタップ",d:"画面下部に「Excelで開く」「その他...」が表示されます"},
+                  {n:"3",t:"「ファイルに保存」を選択",d:"共有メニューの中から選んでください"},
+                  {n:"4",t:"「ダウンロード」を選んで保存",d:"このiPhone内 → ダウンロード に保存すると次回も見つけやすいです"},
+                ].map((s,i)=>(
+                  <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start",marginBottom:14}}>
+                    <div style={{background:WPC.primary,color:"#fff",fontWeight:800,fontSize:13,width:26,height:26,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{s.n}</div>
+                    <div><div style={{fontSize:14,fontWeight:700,marginBottom:2}}>{s.t}</div><div style={{fontSize:12,color:"#6b7280"}}>{s.d}</div></div>
+                  </div>
+                ))}
+                <button onClick={()=>{setIosGuide(null);if(pendingActionRef.current){pendingActionRef.current();pendingActionRef.current=null;}}} style={{width:"100%",padding:"14px",borderRadius:10,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",marginTop:4}}>
+                  出力する →
+                </button>
+                <button onClick={()=>{setIosGuide(null);pendingActionRef.current=null;}} style={{width:"100%",padding:"10px",borderRadius:10,border:"1px solid #e0e3e8",background:"none",color:"#6b7280",fontWeight:500,fontSize:14,cursor:"pointer",marginTop:8}}>
+                  キャンセル
+                </button>
+              </>
+            )}
+            {iosGuide==="import"&&(
+              <>
+                <div style={{fontSize:18,fontWeight:800,marginBottom:4}}>📂 CSVの取込方法</div>
+                <div style={{fontSize:13,color:"#6b7280",marginBottom:20}}>iPhone Safari での手順</div>
+                {[
+                  {n:"1",t:"「ファイルを選択する」をタップ",d:"下のボタンを押すとファイル選択画面が開きます"},
+                  {n:"2",t:"「このiPhone内」を選択",d:"画面上部のタブから選んでください"},
+                  {n:"3",t:"「ダウンロード」フォルダを開く",d:"保存時に「ダウンロード」に入れた場合はここにあります"},
+                  {n:"4",t:"CSVファイルを選択",d:"「勤怠_」で始まるファイルを選んでください"},
+                ].map((s,i)=>(
+                  <div key={i} style={{display:"flex",gap:12,alignItems:"flex-start",marginBottom:14}}>
+                    <div style={{background:"#2563eb",color:"#fff",fontWeight:800,fontSize:13,width:26,height:26,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{s.n}</div>
+                    <div><div style={{fontSize:14,fontWeight:700,marginBottom:2}}>{s.t}</div><div style={{fontSize:12,color:"#6b7280"}}>{s.d}</div></div>
+                  </div>
+                ))}
+                <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"10px 12px",fontSize:12,color:"#92400e",fontWeight:500,marginBottom:16}}>
+                  ⚠️ ExcelでCSVを編集した場合は「コピーを保存する」→「このiPhone内 → ダウンロード」に保存してから取込してください
+                </div>
+                <button onClick={()=>{setIosGuide(null);importRef.current.click();}} style={{width:"100%",padding:"14px",borderRadius:10,border:"none",background:"#2563eb",color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer"}}>
+                  ファイルを選択する →
+                </button>
+                <button onClick={()=>setIosGuide(null)} style={{width:"100%",padding:"10px",borderRadius:10,border:"1px solid #e0e3e8",background:"none",color:"#6b7280",fontWeight:500,fontSize:14,cursor:"pointer",marginTop:8}}>
+                  キャンセル
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       {toast.msg&&(
         <div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",
           background:"#fff",border:`1px solid ${toast.type==="err"?C.red:WPC.primary}`,
@@ -553,12 +608,11 @@ export default function WorkTracker() {
 
         {/* ── INPUT ───────────────────────────────────────────────────────── */}
         {view==="input"&&(()=>{
-          // 今日・現在の職場で「出勤のみ（退勤なし）」のレコードがあるか判定
           const todayRec=records.find(r=>r.date===form.date&&r[activeWP]);
           const workingSegments=(todayRec?.[activeWP]?.segments||[]).filter(s=>s.in&&!s.out);
           const isWorking=!form.id&&workingSegments.length>0;
           return(
-          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px 100px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
             <div style={{marginBottom:14}}>
               <Lbl>日付</Lbl>
               <input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={inp}/>
@@ -568,7 +622,10 @@ export default function WorkTracker() {
             </div>
 
             <Lbl>出退勤（{settings.workplaces[form.wp||activeWP]?.name}）</Lbl>
-            {form.segments.map((seg,i)=>(
+            {form.segments.map((seg,i)=>{
+              // 日またぎ検知：outがinより早い場合
+              const hasOvernightHint=seg.in&&seg.out&&toMin(seg.out)<toMin(seg.in);
+              return(
               <div key={i} style={{background:"#f3f4f6",border:`1px solid ${C.borderAccent}`,borderRadius:10,padding:"12px",marginBottom:8}}>
                 <div style={{display:"flex",alignItems:"center",marginBottom:8,gap:6}}>
                   <span style={{fontSize:13,fontWeight:600,color:C.muted}}>区間 {i+1}</span>
@@ -578,8 +635,7 @@ export default function WorkTracker() {
                       {workingSegments[0]?.in}– 🟢 勤務中
                     </span>
                   )}
-                  <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
-                    <SaveBtn/>
+                  <div style={{marginLeft:"auto"}}>
                     {form.segments.length>1&&<button onClick={()=>rmSeg(i)} style={{background:"none",border:"none",color:C.red,fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>}
                   </div>
                 </div>
@@ -589,13 +645,19 @@ export default function WorkTracker() {
                       <div style={{fontSize:12,fontWeight:600,color:C.muted,marginBottom:4}}>{lbl}</div>
                       <div style={{display:"flex",gap:4}}>
                         <input type="time" value={seg[field]} onChange={e=>updSeg(i,field,e.target.value)} style={{...inp,flex:1}}/>
-                        <button onClick={()=>stampSeg(i,field)} style={stampBtn(C)}>今</button>
+                        <button onClick={()=>stampSeg(i,field)} style={stampBtn(C)}>現在</button>
                       </div>
                     </div>
                   ))}
                 </div>
+                {hasOvernightHint&&(
+                  <div style={{marginTop:8,padding:"6px 10px",borderRadius:6,background:"#eff6ff",border:"1px solid #bfdbfe",fontSize:12,fontWeight:600,color:"#1d4ed8"}}>
+                    🌙 退勤が翌日扱いで計算されます（日またぎ勤務）
+                  </div>
+                )}
               </div>
-            ))}
+              );
+            })}
             {form.segments.length<2&&(
               <button onClick={addSeg} style={{width:"100%",padding:"8px",borderRadius:8,border:`1px dashed ${C.borderAccent}`,background:"none",color:C.muted,fontSize:14,fontWeight:500,cursor:"pointer",marginBottom:16}}>＋ 中抜け区間を追加</button>
             )}
@@ -607,8 +669,7 @@ export default function WorkTracker() {
                 <div style={{display:"flex",alignItems:"center",marginBottom:8,gap:6}}>
                   <span style={{fontSize:13,fontWeight:600,color:WPC.breakColor}}>休憩 {i+1}</span>
                   {brk.in&&brk.out&&<span style={{fontSize:12,color:WPC.breakColor,fontWeight:600}}>（{fmtH(toMin(brk.out)>=toMin(brk.in)?toMin(brk.out)-toMin(brk.in):toMin(brk.out)+1440-toMin(brk.in))}）</span>}
-                  <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
-                    <SaveBtn/>
+                  <div style={{marginLeft:"auto"}}>
                     <button onClick={()=>rmBrk(i)} style={{background:"none",border:"none",color:C.red,fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>
                   </div>
                 </div>
@@ -618,7 +679,7 @@ export default function WorkTracker() {
                       <div style={{fontSize:12,fontWeight:600,color:WPC.breakColor,marginBottom:4}}>{lbl}</div>
                       <div style={{display:"flex",gap:4}}>
                         <input type="time" value={brk[field]} onChange={e=>updBrk(i,field,e.target.value)} style={{...inp,flex:1,borderColor:WPC.breakBorder}}/>
-                        <button onClick={()=>stampBrk(i,field)} style={{...stampBtn(C),borderColor:WPC.breakBorder,color:WPC.breakColor}}>今</button>
+                        <button onClick={()=>stampBrk(i,field)} style={{...stampBtn(C),borderColor:WPC.breakBorder,color:WPC.breakColor}}>現在</button>
                       </div>
                     </div>
                   ))}
@@ -634,13 +695,18 @@ export default function WorkTracker() {
 
             {formWage.totalMin>0&&<WageBreakdown w={formWage} rate={currentRate} C={C} compact/>}
 
-            <button onClick={handleSave} style={{width:"100%",marginTop:14,padding:"14px 0",borderRadius:10,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:16,cursor:"pointer"}}>
-              {form.id?"更新する":"記録を保存"}
-            </button>
-            {form.id&&<button onClick={()=>setForm(emptyForm())} style={{width:"100%",marginTop:8,padding:"10px 0",borderRadius:10,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:15,fontWeight:500,cursor:"pointer"}}>キャンセル</button>}
-
             <div style={{marginTop:12,padding:"10px 12px",borderRadius:8,background:"#f0fdf4",border:"1px solid #bbf7d0",fontSize:12,fontWeight:500,color:"#15803d"}}>
               📥 データはこのデバイスに保存。履歴タブからCSVダウンロードできます。
+            </div>
+
+            {/* フローティング保存ボタン */}
+            <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:500,padding:"12px 16px",background:"rgba(255,255,255,0.95)",backdropFilter:"blur(8px)",borderTop:`1px solid ${C.border}`,boxSizing:"border-box",zIndex:100}}>
+              <button onClick={handleSave} style={{width:"100%",padding:"14px 0",borderRadius:10,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:16,cursor:"pointer",boxShadow:`0 4px 16px ${WPC.shadow}`}}>
+                {form.id?"✓ 更新する":"✓ 記録を保存"}
+              </button>
+              {form.id&&(
+                <button onClick={()=>setForm(emptyForm())} style={{width:"100%",marginTop:6,padding:"9px 0",borderRadius:10,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontSize:14,fontWeight:500,cursor:"pointer"}}>キャンセル</button>
+              )}
             </div>
           </div>
           );
@@ -650,11 +716,11 @@ export default function WorkTracker() {
         {view==="history"&&(
           <div>
             <div style={{display:"flex",gap:8,marginBottom:12}}>
-              <button onClick={()=>downloadCSV(periodRecords,settings,`勤怠_${getPeriodLabel(periodKey,activeCD)}`)} style={{flex:1,padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer"}}>
+              <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(periodRecords,settings,`勤怠_${getPeriodLabel(periodKey,activeCD)}`);setIosGuide("export");}} style={{flex:1,padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer"}}>
                 📥 この期間をCSV出力
               </button>
-              <button onClick={()=>downloadCSV(records,settings,"勤怠_全期間")} style={{padding:"11px 14px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.muted,fontWeight:600,fontSize:13,cursor:"pointer"}}>全期間</button>
-              <button onClick={()=>importRef.current.click()} style={{padding:"11px 14px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.blue,fontWeight:600,fontSize:13,cursor:"pointer"}}>📂 取込</button>
+              <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(records,settings,"勤怠_全期間");setIosGuide("export");}} style={{padding:"11px 14px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.muted,fontWeight:600,fontSize:13,cursor:"pointer"}}>全期間</button>
+              <button onClick={()=>setIosGuide("import")} style={{padding:"11px 14px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.blue,fontWeight:600,fontSize:13,cursor:"pointer"}}>📂 取込</button>
               <input ref={importRef} type="file" accept=".csv" onChange={handleImport} style={{display:"none"}}/>
             </div>
 
@@ -865,10 +931,10 @@ export default function WorkTracker() {
                 📂 CSVを修正して再取込も可能<br/>
                 🔄 アプリを開くたびに自動バックアップ
               </div>
-              <button onClick={()=>downloadCSV(records,settings,"勤怠_全データバックアップ")} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer",marginBottom:8}}>
+              <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(records,settings,"勤怠_全データバックアップ");setIosGuide("export");}} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer",marginBottom:8}}>
                 📥 全データをCSVバックアップ
               </button>
-              <button onClick={()=>importRef.current.click()} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.blue,fontWeight:700,fontSize:14,cursor:"pointer"}}>
+              <button onClick={()=>setIosGuide("import")} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.blue,fontWeight:700,fontSize:14,cursor:"pointer"}}>
                 📂 CSVから取込（修正データ）
               </button>
               <input ref={importRef} type="file" accept=".csv" onChange={handleImport} style={{display:"none"}}/>
