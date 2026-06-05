@@ -16,6 +16,17 @@ const WP_COLORS = {
   B: { primary:"#1d6fb8", light:"#eff6ff", border:"#3b82f6", shadow:"rgba(29,111,184,0.3)", gradient:"135deg,#eff6ff,#ffffff", badge:"#dbeafe",
        breakBg:"#eff6ff", breakBorder:"#93c5fd", breakColor:"#2563eb", breakDash:"#60a5fa", breakText:"#1e3a5f" },
 };
+const PATTERN_COLORS = [
+  {value:"#16a34a",label:"緑（通常）"},
+  {value:"#2563eb",label:"青（午前）"},
+  {value:"#7c3aed",label:"紫（夜勤）"},
+  {value:"#ea580c",label:"橙（午後）"},
+  {value:"#db2777",label:"桃（特別）"},
+  {value:"#0891b2",label:"水（早番）"},
+  {value:"#854d0e",label:"茶（遅番）"},
+  {value:"#4b5563",label:"灰（その他）"},
+];
+
 const DEFAULT_WP = (id) => ({
   name: id === "A" ? "職場A" : "職場B",
   rateHistory: [{ from: "2020-01-01", rate: 1200 }],
@@ -298,7 +309,15 @@ export default function WorkTracker() {
 
   // Segments
   const updSeg=(i,f,v)=>setForm(fm=>{const s=[...fm.segments];s[i]={...s[i],[f]:v};return{...fm,segments:s};});
-  const addSeg=()=>{if(form.segments.length>=2) return;setForm(f=>({...f,segments:[...f.segments,{in:"",out:""}]}));};
+  const addSeg=()=>{
+    if(form.segments.length>=2) return;
+    if(!form.segments[0]?.out){
+      setWarnings(["区間1の退勤時刻を入力してから追加してください"]);
+      setTimeout(()=>setWarnings([]),3000);
+      return;
+    }
+    setForm(f=>({...f,segments:[...f.segments,{in:"",out:""}]}));
+  };
   const rmSeg=(i)=>setForm(f=>({...f,segments:f.segments.filter((_,idx)=>idx!==i)}));
   const stampSeg=(i,field)=>updSeg(i,field,nowStr());
 
@@ -533,7 +552,12 @@ export default function WorkTracker() {
         </div>
 
         {/* ── INPUT ───────────────────────────────────────────────────────── */}
-        {view==="input"&&(
+        {view==="input"&&(()=>{
+          // 今日・現在の職場で「出勤のみ（退勤なし）」のレコードがあるか判定
+          const todayRec=records.find(r=>r.date===form.date&&r[activeWP]);
+          const workingSegments=(todayRec?.[activeWP]?.segments||[]).filter(s=>s.in&&!s.out);
+          const isWorking=!form.id&&workingSegments.length>0;
+          return(
           <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
             <div style={{marginBottom:14}}>
               <Lbl>日付</Lbl>
@@ -549,6 +573,11 @@ export default function WorkTracker() {
                 <div style={{display:"flex",alignItems:"center",marginBottom:8,gap:6}}>
                   <span style={{fontSize:13,fontWeight:600,color:C.muted}}>区間 {i+1}</span>
                   {i>0&&<span style={{fontSize:12,fontWeight:600,color:C.blue}}>（中抜け後）</span>}
+                  {i===0&&isWorking&&(
+                    <span style={{fontSize:13,fontWeight:700,color:"#16a34a",background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"2px 8px"}}>
+                      {workingSegments[0]?.in}– 🟢 勤務中
+                    </span>
+                  )}
                   <div style={{marginLeft:"auto",display:"flex",gap:6,alignItems:"center"}}>
                     <SaveBtn/>
                     {form.segments.length>1&&<button onClick={()=>rmSeg(i)} style={{background:"none",border:"none",color:C.red,fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>}
@@ -614,7 +643,8 @@ export default function WorkTracker() {
               📥 データはこのデバイスに保存。履歴タブからCSVダウンロードできます。
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* ── HISTORY ─────────────────────────────────────────────────────── */}
         {view==="history"&&(
@@ -1131,7 +1161,7 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
 
       {/* サブナビ */}
       <div style={{display:"flex",gap:6,marginBottom:14}}>
-        {[["calendar","📅 カレンダー"],["patterns","⚙️ パターン設定"]].map(([k,lbl])=>(
+        {[["calendar","📅 カレンダー"],["both","🗓 統合"],["patterns","⚙️ パターン設定"]].map(([k,lbl])=>(
           <button key={k} onClick={()=>setShiftView(k)} style={{
             flex:1,padding:"9px 4px",borderRadius:9,border:"none",
             background:shiftView===k?wpColors.primary:C.surface,
@@ -1187,19 +1217,120 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
                 const rec=getRecord(d);
                 const today=dateStr(d)===new Date().toISOString().slice(0,10);
                 const dow=new Date(y,m-1,d).getDay();
+                const shPat=sh?.patternId?wpPatterns.find(p=>p.id===sh.patternId):null;
+                const shColor=shPat?.color||wpColors.primary;
+                const shBg=shPat?.color?shPat.color+"22":wpColors.light;
                 return(
                   <div key={d} onClick={()=>setEditShift({date:dateStr(d),wp:shiftWP,existing:sh})}
-                    style={{background:sh?wpColors.light:C.surface,minHeight:56,padding:"4px",cursor:"pointer",
-                      border:today?`2px solid ${wpColors.primary}`:"none",boxSizing:"border-box"}}>
-                    <div style={{fontSize:12,fontWeight:700,color:today?wpColors.primary:dow===0?"#dc2626":dow===6?"#2563eb":"#374151",marginBottom:2}}>{d}</div>
+                    style={{background:C.surface,minHeight:56,padding:"4px",cursor:"pointer",
+                      border:today?`3px solid ${shColor}`:sh?`2px solid ${shColor}`:`1px solid transparent`,
+                      boxSizing:"border-box"}}>
+                    <div style={{fontSize:12,fontWeight:700,color:today?shColor:dow===0?"#dc2626":dow===6?"#2563eb":"#374151",marginBottom:2}}>{d}</div>
                     {sh&&(
-                      <div style={{fontSize:10,fontWeight:600,color:wpColors.primary,lineHeight:1.3}}>
+                      <div style={{fontSize:10,fontWeight:600,color:shColor,lineHeight:1.3}}>
+                        {shPat&&<div style={{fontSize:9,background:shColor,color:"#fff",borderRadius:3,padding:"1px 3px",marginBottom:1,display:"inline-block"}}>{shPat.name}</div>}
                         <div>{sh.segments?.[0]?.in||""}〜{sh.segments?.[0]?.out||""}</div>
                         {sh.segments?.[1]?.in&&<div style={{color:C.muted}}>{sh.segments[1].in}〜{sh.segments[1].out}</div>}
                         {sh.breakMin>0&&<div style={{color:C.muted}}>休{sh.breakMin}分</div>}
                       </div>
                     )}
                     {rec&&<div style={{fontSize:10,fontWeight:700,color:C.green,marginTop:1}}>✓実績</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {/* ── 統合カレンダービュー ── */}
+      {shiftView==="both"&&(
+        <div>
+          {/* 月ナビ */}
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"10px 14px"}}>
+            <button onClick={()=>setShiftMonth(k=>shiftPeriod(k,-1))} style={arrowBtn(C)}>‹</button>
+            <div style={{flex:1,textAlign:"center",fontSize:16,fontWeight:700}}>{y}年{m}月</div>
+            <button onClick={()=>setShiftMonth(k=>shiftPeriod(k,1))} style={arrowBtn(C)}>›</button>
+          </div>
+
+          {/* 両職場の見込み合計 */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            {WPS.map(wp=>{
+              const wpc2=WP_COLORS[wp];
+              const wpCfg2=settings.workplaces[wp];
+              let totalPay=0,totalMin=0;
+              for(let d=1;d<=daysInMonth;d++){
+                const s=shifts.find(s=>s.date===dateStr(d)&&s.wp===wp);
+                if(!s) continue;
+                const rate=getRateForDate(dateStr(d),wpCfg2?.rateHistory||[]);
+                const w=calcShiftPay(s.segments||[],s.breakMin||0,s.lateNightBreak||false,rate);
+                totalPay+=w.totalPay;totalMin+=w.totalMin;
+              }
+              return(
+                <div key={wp} style={{background:`linear-gradient(${wpc2.gradient})`,border:`1px solid ${wpc2.border}`,borderRadius:10,padding:"10px 12px"}}>
+                  <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:2}}>{wpCfg2?.name}</div>
+                  <div style={{fontSize:18,fontWeight:800,color:wpc2.primary}}>{cur}{Math.round(totalPay).toLocaleString()}</div>
+                  <div style={{fontSize:12,color:C.muted}}>{fmtH(totalMin)}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 統合カレンダーグリッド */}
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",background:"#f3f4f6"}}>
+              {["日","月","火","水","木","金","土"].map((d,i)=>(
+                <div key={d} style={{textAlign:"center",padding:"8px 2px",fontSize:12,fontWeight:700,
+                  color:i===0?"#dc2626":i===6?"#2563eb":"#6b7280"}}>{d}</div>
+              ))}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,background:C.border}}>
+              {calDays.map((d,i)=>{
+                if(!d) return <div key={`e${i}`} style={{background:C.bg,minHeight:60}}/>;
+                const shA=shifts.find(s=>s.date===dateStr(d)&&s.wp==="A");
+                const shB=shifts.find(s=>s.date===dateStr(d)&&s.wp==="B");
+                const recA=records.find(r=>r.date===dateStr(d)&&r.A&&(r.A.segments||[]).some(s=>s.in||s.out));
+                const recB=records.find(r=>r.date===dateStr(d)&&r.B&&(r.B.segments||[]).some(s=>s.in||s.out));
+                const today=dateStr(d)===new Date().toISOString().slice(0,10);
+                const dow=new Date(y,m-1,d).getDay();
+                const getPatColor=(sh,wp)=>{
+                  const pat=sh?.patternId?(patterns[wp]||[]).find(p=>p.id===sh.patternId):null;
+                  return pat?.color||WP_COLORS[wp].primary;
+                };
+                return(
+                  <div key={d} style={{background:C.surface,minHeight:60,padding:"3px",boxSizing:"border-box",
+                    border:today?`3px solid #1a1a2e`:`1px solid transparent`}}>
+                    <div style={{fontSize:11,fontWeight:700,marginBottom:2,
+                      color:today?"#1a1a2e":dow===0?"#dc2626":dow===6?"#2563eb":"#374151"}}>{d}</div>
+                    {/* 職場A */}
+                    {shA&&(
+                      <div onClick={()=>{setShiftWP("A");setEditShift({date:dateStr(d),wp:"A",existing:shA});}}
+                        style={{fontSize:9,fontWeight:600,color:"#fff",background:getPatColor(shA,"A"),borderRadius:3,padding:"1px 3px",marginBottom:2,cursor:"pointer",lineHeight:1.4}}>
+                        {(patterns.A||[]).find(p=>p.id===shA.patternId)?.name||settings.workplaces.A?.name}
+                        {recA&&" ✓"}
+                      </div>
+                    )}
+                    {!shA&&(
+                      <div onClick={()=>{setShiftWP("A");setEditShift({date:dateStr(d),wp:"A",existing:null});}}
+                        style={{fontSize:9,color:C.dim,borderRadius:3,padding:"1px 3px",marginBottom:2,cursor:"pointer",border:`1px dashed ${C.border}`,lineHeight:1.4}}>
+                        {settings.workplaces.A?.name?.slice(0,3)}+
+                      </div>
+                    )}
+                    {/* 職場B */}
+                    {shB&&(
+                      <div onClick={()=>{setShiftWP("B");setEditShift({date:dateStr(d),wp:"B",existing:shB});}}
+                        style={{fontSize:9,fontWeight:600,color:"#fff",background:getPatColor(shB,"B"),borderRadius:3,padding:"1px 3px",cursor:"pointer",lineHeight:1.4}}>
+                        {(patterns.B||[]).find(p=>p.id===shB.patternId)?.name||settings.workplaces.B?.name}
+                        {recB&&" ✓"}
+                      </div>
+                    )}
+                    {!shB&&(
+                      <div onClick={()=>{setShiftWP("B");setEditShift({date:dateStr(d),wp:"B",existing:null});}}
+                        style={{fontSize:9,color:C.dim,borderRadius:3,padding:"1px 3px",cursor:"pointer",border:`1px dashed ${C.border}`,lineHeight:1.4}}>
+                        {settings.workplaces.B?.name?.slice(0,3)}+
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1215,11 +1346,11 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
             <div style={{textAlign:"center",padding:"30px 0",color:C.dim,fontSize:14}}>パターンがまだありません</div>
           )}
           {wpPatterns.map(pat=>(
-            <div key={pat.id} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px",marginBottom:8,cursor:"pointer"}}
+            <div key={pat.id} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px",marginBottom:8,cursor:"pointer",borderLeft:`4px solid ${pat.color||wpColors.primary}`}}
               onClick={()=>setEditPattern({...pat})}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <div>
-                  <div style={{fontSize:15,fontWeight:700,color:C.text}}>{pat.name}</div>
+                  <div style={{fontSize:15,fontWeight:700,color:pat.color||C.text}}>{pat.name}</div>
                   <div style={{fontSize:13,color:C.muted,marginTop:3}}>
                     {pat.segments?.[0]?.in}〜{pat.segments?.[0]?.out}
                     {pat.segments?.[1]?.in&&` / ${pat.segments[1].in}〜${pat.segments[1].out}`}
@@ -1297,15 +1428,23 @@ function ShiftEditModal({dateInfo,wp,wpCfg,wpPatterns,wpColors,C,inp,onSave,onDe
         {/* パターン選択 */}
         {wpPatterns.length>0&&(
           <div style={{marginBottom:14}}>
-            <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:6}}>パターンから選択</div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+              <div style={{fontSize:13,fontWeight:600,color:C.muted}}>パターンから選択</div>
+              <button onClick={()=>onSave({date:dateInfo.date,wp,segments,breakMin,lateNightBreak,memo,patternId})}
+                style={{padding:"3px 12px",borderRadius:7,border:"none",background:wpColors.primary,color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer"}}>保存</button>
+            </div>
             <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-              {wpPatterns.map(pat=>(
+              {wpPatterns.map(pat=>{
+                const pc=pat.color||wpColors.primary;
+                return(
                 <button key={pat.id} onClick={()=>applyPattern(pat)} style={{
-                  padding:"6px 14px",borderRadius:20,border:`1px solid ${patternId===pat.id?wpColors.primary:C.border}`,
-                  background:patternId===pat.id?wpColors.primary:"#fff",
+                  padding:"6px 14px",borderRadius:20,
+                  border:`1px solid ${patternId===pat.id?pc:C.border}`,
+                  background:patternId===pat.id?pc:"#fff",
                   color:patternId===pat.id?"#fff":C.muted,fontWeight:600,fontSize:13,cursor:"pointer"
                 }}>{pat.name}</button>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -1397,6 +1536,7 @@ function ShiftEditModal({dateInfo,wp,wpCfg,wpPatterns,wpColors,C,inp,onSave,onDe
 // ─── PatternEditModal ─────────────────────────────────────────────────────────
 function PatternEditModal({pattern,wpColors,C,inp,onSave,onDelete,onClose}){
   const [name,setName]=useState(pattern.name||"");
+  const [color,setColor]=useState(pattern.color||PATTERN_COLORS[0].value);
   const [segments,setSegments]=useState(pattern.segments||[{in:"",out:""}]);
   const [breakMin,setBreakMin]=useState(pattern.breakMin||0);
   const [lateNightBreak,setLateNightBreak]=useState(pattern.lateNightBreak||false);
@@ -1417,6 +1557,18 @@ function PatternEditModal({pattern,wpColors,C,inp,onSave,onDelete,onClose}){
         <div style={{marginBottom:12}}>
           <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:6}}>パターン名</div>
           <input value={name} onChange={e=>setName(e.target.value)} placeholder="例：早番、遅番、中抜け" style={inp}/>
+        </div>
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:8}}>カレンダー表示色</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+            {PATTERN_COLORS.map(pc=>(
+              <button key={pc.value} onClick={()=>setColor(pc.value)} title={pc.label} style={{
+                width:28,height:28,borderRadius:"50%",background:pc.value,border:`3px solid ${color===pc.value?"#1a1a2e":"transparent"}`,
+                cursor:"pointer",outline:color===pc.value?`2px solid ${pc.value}`:"none",outlineOffset:2
+              }}/>
+            ))}
+          </div>
+          <div style={{fontSize:12,color:C.muted,marginTop:6}}>選択中：<span style={{fontWeight:700,color}}>{PATTERN_COLORS.find(p=>p.value===color)?.label||color}</span></div>
         </div>
 
         {segments.map((seg,i)=>(
@@ -1456,7 +1608,7 @@ function PatternEditModal({pattern,wpColors,C,inp,onSave,onDelete,onClose}){
           )}
         </div>
 
-        <button onClick={()=>{ if(!name.trim())return; onSave({...pattern,name,segments,breakMin,lateNightBreak}); }}
+        <button onClick={()=>{ if(!name.trim())return; onSave({...pattern,name,color,segments,breakMin,lateNightBreak}); }}
           style={{width:"100%",padding:"13px",borderRadius:10,border:"none",background:wpColors.primary,color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",marginBottom:8}}>
           {isNew?"追加する":"更新する"}
         </button>
