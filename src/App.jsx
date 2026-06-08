@@ -1276,7 +1276,7 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
                   color:i===0?"#dc2626":i===6?"#2563eb":"#6b7280"}}>{d}</div>
               ))}
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,background:C.border}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:1,background:C.border}}>
               {calDays.map((d,i)=>{
                 if(!d) return <div key={`e${i}`} style={{background:C.bg,minHeight:56}}/>;
                 const sh=getShift(d);
@@ -1290,10 +1290,10 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
                   <div key={d} onClick={()=>setEditShift({date:dateStr(d),wp:shiftWP,existing:sh})}
                     style={{background:C.surface,minHeight:56,padding:"4px",cursor:"pointer",
                       border:today?`3px solid ${shColor}`:sh?`2px solid ${shColor}`:`1px solid transparent`,
-                      boxSizing:"border-box"}}>
+                      boxSizing:"border-box",overflow:"hidden",minWidth:0}}>
                     <div style={{fontSize:12,fontWeight:700,color:today?shColor:dow===0?"#dc2626":dow===6?"#2563eb":"#374151",marginBottom:2}}>{d}</div>
                     {sh&&(
-                      <div style={{fontSize:10,fontWeight:600,color:shColor,lineHeight:1.3}}>
+                      <div style={{fontSize:10,fontWeight:600,color:shColor,lineHeight:1.3,wordBreak:"break-all"}}>
                         {shPat&&<div style={{fontSize:9,background:shColor,color:"#fff",borderRadius:3,padding:"1px 3px",marginBottom:1,display:"inline-block"}}>{shPat.name}</div>}
                         <div>{sh.segments?.[0]?.in||""}〜{sh.segments?.[0]?.out||""}</div>
                         {sh.segments?.[1]?.in&&<div style={{color:C.muted}}>{sh.segments[1].in}〜{sh.segments[1].out}</div>}
@@ -1351,7 +1351,7 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
                   color:i===0?"#dc2626":i===6?"#2563eb":"#6b7280"}}>{d}</div>
               ))}
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:1,background:C.border}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:1,background:C.border}}>
               {calDays.map((d,i)=>{
                 if(!d) return <div key={`e${i}`} style={{background:C.bg,minHeight:60}}/>;
                 const shA=shifts.find(s=>s.date===dateStr(d)&&s.wp==="A");
@@ -1366,7 +1366,7 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
                 };
                 return(
                   <div key={d} style={{background:C.surface,minHeight:60,padding:"3px",boxSizing:"border-box",
-                    border:today?`3px solid #1a1a2e`:`1px solid transparent`}}>
+                    border:today?`3px solid #1a1a2e`:`1px solid transparent`,overflow:"hidden",minWidth:0}}>
                     <div style={{fontSize:11,fontWeight:700,marginBottom:2,
                       color:today?"#1a1a2e":dow===0?"#dc2626":dow===6?"#2563eb":"#374151"}}>{d}</div>
                     {/* 職場A */}
