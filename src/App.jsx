@@ -854,7 +854,7 @@ export default function WorkTracker() {
                   </div>
                   <button onClick={()=>setPayMonth(k=>shiftPeriod(k,1))} style={arrowBtn(C)}>›</button>
                 </div>
-                {payMonthSummary.map(({wp,name,totalPay,totalMin,start,end,payDay})=>(
+                {payMonthSummary.map(({wp,name,totalPay,totalMin,start,end,payDay,payMonthOffset})=>(
                   <div key={wp} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"16px",marginBottom:12,boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                       <div>
