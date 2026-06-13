@@ -32,6 +32,7 @@ const DEFAULT_WP = (id) => ({
   rateHistory: [{ from: "2020-01-01", rate: 1200 }],
   closingDay: 25,
   payDay: 10,
+  payMonthOffset: 1, // 0=当月払い / 1=翌月払い
 });
 const DEFAULT_SETTINGS = {
   currency: "¥",
@@ -453,16 +454,17 @@ export default function WorkTracker() {
   // SaveBtn removed — replaced by floating save button
 
   // ─── Summary: 支払月別 ────────────────────────────────────────────────────
-  // 「支払月にいくら受け取るか」= 前月の締め期間で計算
+  // 「支払月にいくら受け取るか」= payMonthOffset分さかのぼった締め期間で計算
   const payMonthSummary=useMemo(()=>{
     const [py,pm]=payMonth.split("-").map(Number);
     return WPS.map(wp=>{
       const cfg=settings.workplaces[wp];
       const cd=cfg.closingDay??25;
       const pd=cfg.payDay??10;
-      // 支払月の前月締め期間を取得（例：6月払い → 5月締め期間）
-      const prevPK=shiftPeriod(payMonth,-1);
-      const{start,end}=getPeriodBounds(prevPK,cd);
+      const offset=cfg.payMonthOffset??1; // 0=当月 / 1=翌月
+      // 支払月からoffset分さかのぼった締め期間を取得
+      const targetPK=shiftPeriod(payMonth,-offset);
+      const{start,end}=getPeriodBounds(targetPK,cd);
       const wpRecords=records.filter(r=>r.date>=start&&r.date<=end&&r[wp]&&(r[wp].segments||[]).some(s=>s.in||s.out));
       let totalPay=0,totalMin=0;
       for(const r of wpRecords){
@@ -470,7 +472,7 @@ export default function WorkTracker() {
         const w=calcWage(r[wp].segments||[],r[wp].breaks||[],rate);
         totalPay+=w.totalPay;totalMin+=w.totalMin;
       }
-      return{wp,name:cfg.name,totalPay,totalMin,start,end,payDay:pd};
+      return{wp,name:cfg.name,totalPay,totalMin,start,end,payDay:pd,payMonthOffset:offset};
     });
   },[records,settings,payMonth]);
 
@@ -803,7 +805,7 @@ export default function WorkTracker() {
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
                         <div>
                           <div style={{fontSize:16,fontWeight:800,color:C.text}}>{cfg?.name||`職場${wp}`}</div>
-                          <div style={{fontSize:12,color:C.muted,marginTop:2}}>{cd===0?"月末締め":`${cd}日締め`} / 支払日 {cfg?.payDay===0?"月末":`${cfg?.payDay??10}日`}</div>
+                          <div style={{fontSize:12,color:C.muted,marginTop:2}}>{cd===0?"月末締め":`${cd}日締め`} / {cfg?.payMonthOffset===0?"当月":"翌月"}{cfg?.payDay===0?"月末":`${cfg?.payDay??10}日`}払い</div>
                         </div>
                         <div style={{textAlign:"right"}}>
                           <div style={{fontSize:22,fontWeight:800,color:WP_COLORS[wp].primary}}>{fmtMoney(totalPay,settings.currency||"¥")}</div>
@@ -858,7 +860,7 @@ export default function WorkTracker() {
                       <div>
                         <div style={{fontSize:16,fontWeight:800,color:C.text}}>{name}</div>
                         <div style={{fontSize:12,color:C.muted,marginTop:2}}>集計期間：{start} 〜 {end}</div>
-                        <div style={{fontSize:12,color:C.green,fontWeight:600,marginTop:2}}>支払予定日：{payDay===0?"月末":`${payDay}日`}</div>
+                        <div style={{fontSize:12,color:C.green,fontWeight:600,marginTop:2}}>支払予定日：{payMonthOffset===0?"当月":"翌月"}{payDay===0?"月末":`${payDay}日`}</div>
                       </div>
                       <div style={{textAlign:"right"}}>
                         <div style={{fontSize:22,fontWeight:800,color:WP_COLORS[wp].primary}}>{fmtMoney(totalPay,settings.currency||"¥")}</div>
@@ -906,12 +908,19 @@ export default function WorkTracker() {
                       </select>
                     </div>
                     <div>
-                      <Lbl>支払日</Lbl>
-                      <select value={cfg.payDay??10} onChange={e=>updateWP("payDay",Number(e.target.value))} style={{...inp,cursor:"pointer"}}>
-                        {[...Array(28)].map((_,i)=><option key={i+1} value={i+1}>{i+1}日</option>)}
-                        <option value={0}>月末</option>
+                      <Lbl>支払月</Lbl>
+                      <select value={cfg.payMonthOffset??1} onChange={e=>updateWP("payMonthOffset",Number(e.target.value))} style={{...inp,cursor:"pointer"}}>
+                        <option value={0}>当月払い</option>
+                        <option value={1}>翌月払い</option>
                       </select>
                     </div>
+                  </div>
+                  <div style={{marginBottom:10}}>
+                    <Lbl>支払日</Lbl>
+                    <select value={cfg.payDay??10} onChange={e=>updateWP("payDay",Number(e.target.value))} style={{...inp,cursor:"pointer"}}>
+                      {[...Array(28)].map((_,i)=><option key={i+1} value={i+1}>{i+1}日</option>)}
+                      <option value={0}>月末</option>
+                    </select>
                   </div>
                   <Lbl>💰 時給履歴（日単位）</Lbl>
                   <div style={{fontSize:12,color:C.muted,marginBottom:8,fontWeight:500}}>日付ごとに時給を設定。その日以降のレコードに自動適用されます。</div>
