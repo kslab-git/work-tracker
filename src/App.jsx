@@ -251,6 +251,7 @@ export default function WorkTracker() {
   const [view,setView]=useState("input");
   const [activeWP,setActiveWP]=useState("A");
   const [summaryMode,setSummaryMode]=useState("closing"); // "closing" | "payMonth"
+  const [payMonth,setPayMonth]=useState(()=>{const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}`;}); // 支払月ナビ用
   const [toast,setToast]=useState({msg:"",type:"ok"});
   const [expandedDay,setExpandedDay]=useState(null);
   const [warnings,setWarnings]=useState([]);
@@ -452,17 +453,16 @@ export default function WorkTracker() {
   // SaveBtn removed — replaced by floating save button
 
   // ─── Summary: 支払月別 ────────────────────────────────────────────────────
+  // 「支払月にいくら受け取るか」= 前月の締め期間で計算
   const payMonthSummary=useMemo(()=>{
-    // 各職場の支払月に対応する締め期間を計算
-    const now=new Date(),y=now.getFullYear(),m=now.getMonth()+1;
+    const [py,pm]=payMonth.split("-").map(Number);
     return WPS.map(wp=>{
       const cfg=settings.workplaces[wp];
       const cd=cfg.closingDay??25;
-      const pd=cfg.payDay||10;
-      // 今月支払い = 前月締め期間
-      const prevPK=shiftPeriod(`${y}-${pad(m)}`,-1);
-      const{start,end}=getPeriodBounds(`${y}-${pad(m)}`,cd);
-      // 当月締め
+      const pd=cfg.payDay??10;
+      // 支払月の前月締め期間を取得（例：6月払い → 5月締め期間）
+      const prevPK=shiftPeriod(payMonth,-1);
+      const{start,end}=getPeriodBounds(prevPK,cd);
       const wpRecords=records.filter(r=>r.date>=start&&r.date<=end&&r[wp]&&(r[wp].segments||[]).some(s=>s.in||s.out));
       let totalPay=0,totalMin=0;
       for(const r of wpRecords){
@@ -472,7 +472,7 @@ export default function WorkTracker() {
       }
       return{wp,name:cfg.name,totalPay,totalMin,start,end,payDay:pd};
     });
-  },[records,settings]);
+  },[records,settings,payMonth]);
 
   return (
     <div style={{minHeight:"100vh",background:C.bg,color:C.text,
@@ -843,6 +843,15 @@ export default function WorkTracker() {
 
             {summaryMode==="payMonth"&&(
               <div>
+                {/* 支払月ナビ */}
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"10px 14px"}}>
+                  <button onClick={()=>setPayMonth(k=>shiftPeriod(k,-1))} style={arrowBtn(C)}>‹</button>
+                  <div style={{flex:1,textAlign:"center"}}>
+                    <div style={{fontSize:12,color:C.muted,fontWeight:500,marginBottom:2}}>支払月</div>
+                    <div style={{fontSize:16,fontWeight:700,color:C.text}}>{payMonth.replace("-","年")}月</div>
+                  </div>
+                  <button onClick={()=>setPayMonth(k=>shiftPeriod(k,1))} style={arrowBtn(C)}>›</button>
+                </div>
                 {payMonthSummary.map(({wp,name,totalPay,totalMin,start,end,payDay})=>(
                   <div key={wp} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"16px",marginBottom:12,boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -859,7 +868,7 @@ export default function WorkTracker() {
                   </div>
                 ))}
                 <div style={{background:"linear-gradient(135deg,#fff8ee,#ffffff)",border:`2px solid ${C.gold}`,borderRadius:14,padding:"16px",textAlign:"center"}}>
-                  <div style={{fontSize:13,color:C.muted,fontWeight:600,marginBottom:4}}>今月の受取合計（予定）</div>
+                  <div style={{fontSize:13,color:C.muted,fontWeight:600,marginBottom:4}}>{payMonth.replace("-","年")}月の受取合計（予定）</div>
                   <div style={{fontSize:28,fontWeight:800,color:C.gold}}>{fmtMoney(payMonthSummary.reduce((s,r)=>s+r.totalPay,0),settings.currency||"¥")}</div>
                 </div>
               </div>
