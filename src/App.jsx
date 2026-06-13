@@ -1137,31 +1137,33 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
   const getShift = (d) => shifts.find(s=>s.date===dateStr(d)&&s.wp===shiftWP);
   const getRecord = (d) => records.find(r=>r.date===dateStr(d)&&r[shiftWP]&&(r[shiftWP].segments||[]).some(s=>s.in||s.out));
 
-  // 月間見込み集計
+  // 締め日ベースの期間を計算（月カレンダーに対応する締め期間）
+  const cd = wpCfg?.closingDay ?? 25;
+  const periodBounds = useMemo(()=>getPeriodBounds(shiftMonth, cd),[shiftMonth, cd]);
+
+  // 月間見込み集計（締め日ベース）
   const monthSummary = useMemo(()=>{
     let totalPay=0, totalMin=0;
-    for(let d=1;d<=daysInMonth;d++){
-      const s=getShift(d);
-      if(!s) continue;
-      const rate=getRateForDate(dateStr(d),wpCfg?.rateHistory||[]);
+    const filtered = shifts.filter(s=>s.wp===shiftWP&&s.date>=periodBounds.start&&s.date<=periodBounds.end);
+    for(const s of filtered){
+      const rate=getRateForDate(s.date,wpCfg?.rateHistory||[]);
       const w=calcShiftPay(s.segments||[],s.breakMin||0,s.lateNightBreak||false,rate);
       totalPay+=w.totalPay; totalMin+=w.totalMin;
     }
     return{totalPay,totalMin};
-  },[shifts,shiftWP,shiftMonth]);
+  },[shifts,shiftWP,shiftMonth,periodBounds]);
 
-  // 実績との差額
+  // 実績との差額（締め日ベース）
   const actualSummary = useMemo(()=>{
     let totalPay=0, totalMin=0;
-    for(let d=1;d<=daysInMonth;d++){
-      const r=getRecord(d);
-      if(!r) continue;
-      const rate=getRateForDate(dateStr(d),wpCfg?.rateHistory||[]);
+    const filtered = records.filter(r=>r.date>=periodBounds.start&&r.date<=periodBounds.end&&r[shiftWP]&&(r[shiftWP].segments||[]).some(s=>s.in||s.out));
+    for(const r of filtered){
+      const rate=getRateForDate(r.date,wpCfg?.rateHistory||[]);
       const w=calcWage(r[shiftWP].segments||[],r[shiftWP].breaks||[],rate);
       totalPay+=w.totalPay; totalMin+=w.totalMin;
     }
     return{totalPay,totalMin};
-  },[records,shiftWP,shiftMonth]);
+  },[records,shiftWP,shiftMonth,periodBounds]);
 
   // シフト保存
   const saveShift=(sh)=>{
@@ -1253,6 +1255,7 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <div>
                 <div style={{fontSize:11,color:C.muted,fontWeight:600,marginBottom:2}}>見込み収入（{wpCfg?.name}）</div>
+                <div style={{fontSize:10,color:C.dim,marginBottom:2}}>{periodBounds.start.slice(5).replace("-","/")} 〜 {periodBounds.end.slice(5).replace("-","/")}</div>
                 <div style={{fontSize:26,fontWeight:800,color:wpColors.primary}}>{cur}{Math.round(monthSummary.totalPay).toLocaleString()}</div>
                 <div style={{fontSize:12,color:C.muted,marginTop:2}}>{fmtH(monthSummary.totalMin)}</div>
               </div>
