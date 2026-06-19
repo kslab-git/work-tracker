@@ -1052,7 +1052,7 @@ export default function WorkTracker() {
         {/* ── HELP ────────────────────────────────────────────────────────── */}
         {view==="help"&&(
           <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
-            <HelpSection title="📱 基本の使い方" C={C}>
+            <HelpSection title="📱 基本の使い方" C={C} wpc={WPC}>
               {[
                 {n:"1",h:"出勤時：職場を選んで「今」ボタン",p:"上部の職場ボタンで職場A/Bを切り替え、出勤欄の「今」をタップ。"},
                 {n:"2",h:"保存ボタンで即保存",p:"各区間の右上にある「保存」ボタン、または「記録を保存」で保存。"},
@@ -1065,7 +1065,7 @@ export default function WorkTracker() {
                 </div>
               ))}
             </HelpSection>
-            <HelpSection title="💰 給与計算ルール" C={C}>
+            <HelpSection title="💰 給与計算ルール" C={C} wpc={WPC}>
               <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:"6px 16px",fontSize:13}}>
                 {[["通常時間（〜8h）","× 1.00"],["残業（8h超）","× 1.25"],["深夜（22時〜翌5時）","× 1.25"],["深夜残業（両方）","× 1.50"]].map(([k,v],i)=>(
                   <React.Fragment key={i}>
@@ -1075,7 +1075,7 @@ export default function WorkTracker() {
                 ))}
               </div>
             </HelpSection>
-            <HelpSection title="📥 CSVの使い方" C={C}>
+            <HelpSection title="📥 CSVの使い方" C={C} wpc={WPC}>
               <div style={{fontSize:13,color:C.muted,lineHeight:1.9}}>
                 <div>① 履歴タブ → 「この期間をCSV出力」</div>
                 <div>② ExcelやGoogleスプレッドシートで修正</div>
@@ -1085,7 +1085,7 @@ export default function WorkTracker() {
                 </div>
               </div>
             </HelpSection>
-            <HelpSection title="⚠️ 注意事項" C={C}>
+            <HelpSection title="⚠️ 注意事項" C={C} wpc={WPC}>
               <div style={{fontSize:13,color:C.muted,lineHeight:1.9}}>
                 <div>• 日またぎ勤務（例：23:00〜翌7:00）も正確に計算されます</div>
                 <div>• ブラウザのデータ消去でデータが消えます。定期的にCSVバックアップを推奨</div>
@@ -1118,10 +1118,10 @@ function AddRateForm({cfg,updateWP,inp,C,wp}){
 
 function Lbl({children}){return <div style={{fontSize:13,fontWeight:600,color:"#4b5563",letterSpacing:"0.5px",marginBottom:6}}>{children}</div>;}
 
-function HelpSection({title,children,C}){
+function HelpSection({title,children,C,wpc}){
   return(
     <div style={{marginBottom:20}}>
-      <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px solid ${WPC.primary}`}}>{title}</div>
+      <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px solid ${wpc.primary}`}}>{title}</div>
       {children}
     </div>
   );
