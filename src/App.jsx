@@ -517,16 +517,6 @@ export default function WorkTracker() {
   const currentRate=useMemo(()=>getRateForDate(form.date,settings.workplaces[form.wp||activeWP]?.rateHistory||[]),[form.date,form.wp,activeWP,settings]);
   const formWage=useMemo(()=>calcWage(form.segments,form.breaks,currentRate),[form.segments,form.breaks,currentRate]);
 
-  // 休憩時間超過チェック：その日のシフト予定に設定された休憩分数と、実際に入力した休憩時間を比較する
-  // （警告のみ・保存はブロックしない）
-  const breakOverWarning=useMemo(()=>{
-    const matchedShift=shifts.find(s=>s.date===form.date&&s.wp===(form.wp||activeWP));
-    if(!matchedShift||!matchedShift.breakMin) return null;
-    const actualBreakMin=formWage.totalBreakMin;
-    if(actualBreakMin<=matchedShift.breakMin) return null;
-    return `設定休憩（${matchedShift.breakMin}分）を超えています（${actualBreakMin}分）`;
-  },[shifts,form.date,form.wp,activeWP,formWage.totalBreakMin]);
-
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSave=()=>{
     if(!form.segments.some(s=>s.in||s.out)) return;
@@ -980,12 +970,6 @@ export default function WorkTracker() {
               </div>
             ))}
             <button onClick={addBrk} style={{width:"100%",padding:"8px",borderRadius:8,border:`1px dashed ${WPC.breakDash}`,background:WPC.breakBg,color:WPC.breakColor,fontSize:14,fontWeight:600,cursor:"pointer",marginBottom:16}}>＋ 休憩を追加</button>
-
-            {breakOverWarning&&(
-              <div style={{marginTop:-8,marginBottom:16,padding:"8px 12px",borderRadius:8,background:"#fffbeb",border:"1px solid #fde68a",fontSize:12,fontWeight:600,color:"#92400e"}}>
-                ⚠️ {breakOverWarning}
-              </div>
-            )}
 
             <div style={{marginBottom:16}}>
               <Lbl>メモ（任意）</Lbl>
