@@ -419,7 +419,14 @@ export default function WorkTracker() {
   };
 
   // 休憩開始時刻の指定分前になったら、開いている職場タブに関わらずアラームを鳴らす
-  // （アプリを開いている間のみ動作。30秒おきに現在時刻をチェックする）
+  // （アプリを開いている間のみ動作。15秒おきに現在時刻をチェックする）
+  //
+  // 【不具合修正】旧実装は「nowMin===targetMin」という分単位の完全一致判定だった。
+  // 30秒間隔のチェックがその1分間のウィンドウ内で一度も走らないタイミングのずれが起きると
+  // （タブの一瞬の非アクティブ化やGCのポーズ等）、その分を過ぎた瞬間に二度と条件が
+  // 成立しなくなり、アラームが永久に鳴らなくなっていた。
+  // 「目標時刻に到達済み かつ 休憩開始時刻はまだ過ぎていない」という範囲判定に変更し、
+  // 一度でもチェックが走ればその回で追いついて発火できるようにした。
   useEffect(()=>{
     const timer=setInterval(()=>{
       const today=getTodayStr();
@@ -431,15 +438,16 @@ export default function WorkTracker() {
         const sh=shifts.find(s=>s.date===today&&s.wp===wp);
         if(!sh?.breakStart) continue;
         const minutesBefore=cfg.breakAlarmMinutesBefore??5;
-        const targetMin=toMin(sh.breakStart)-minutesBefore;
+        const breakStartMin=toMin(sh.breakStart);
+        const targetMin=breakStartMin-minutesBefore;
         const key=`${today}_${wp}`;
-        if(nowMin===targetMin&&!alarmFiredRef.current.has(key)){
+        if(nowMin>=targetMin&&nowMin<breakStartMin&&!alarmFiredRef.current.has(key)){
           alarmFiredRef.current.add(key);
           playAlarmChime();
           showToast(`🔔 ${cfg.name}：あと${minutesBefore}分で休憩開始です`);
         }
       }
-    },30000);
+    },15000);
     return ()=>clearInterval(timer);
   },[shifts,settings]);
 
