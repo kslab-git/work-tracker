@@ -33,8 +33,6 @@ const DEFAULT_WP = (id) => ({
   closingDay: 25,
   payDay: 10,
   payMonthOffset: 1, // 0=当月払い / 1=翌月払い
-  roundIn: true,   // 出勤丸め：シフト定時より早ければ定時に切り上げ（デフォルトON）
-  roundOut: false, // 退勤丸め：シフト定時より遅ければ定時に切り下げ（デフォルトOFF）
 });
 const DEFAULT_SETTINGS = {
   currency: "¥",
@@ -55,34 +53,6 @@ function getRateForDate(dateStr, rateHistory) {
   const sorted = [...rateHistory].sort((a,b)=>b.from.localeCompare(a.from));
   const match = sorted.find(r=>r.from<=dateStr);
   return match ? match.rate : sorted[sorted.length-1].rate;
-}
-
-// ─── 打刻丸め計算 ──────────────────────────────────────────────────────────
-// シフトが登録されている日のみ、規定時刻（シフトのin/out）を基準に丸める。
-// 出勤：シフト定時より早ければ定時に切り上げ／遅ければ打刻のまま
-// 退勤：シフト定時より遅ければ定時に切り下げ／早ければ打刻のまま
-// シフト未登録の区間・日は丸めをスキップし打刻時刻をそのまま返す。
-function applyRounding(segments, shiftSegments, roundIn, roundOut) {
-  if (!roundIn && !roundOut) return segments.map(s=>({...s}));
-  return segments.map((seg, i) => {
-    const result = { ...seg };
-    const shSeg = shiftSegments && shiftSegments[i];
-    if (!shSeg) return result; // この区間のシフト登録がなければ丸めない
-    if (roundIn && seg.in && shSeg.in) {
-      if (toMin(seg.in) < toMin(shSeg.in)) result.in = shSeg.in;
-    }
-    if (roundOut && seg.out && shSeg.out) {
-      if (toMin(seg.out) > toMin(shSeg.out)) result.out = shSeg.out;
-    }
-    return result;
-  });
-}
-
-// 履歴表示用：実打刻と丸め後が異なる場合「7:50(8:00)」形式の文字列を返す
-function fmtPunch(actual, rounded) {
-  if (!actual) return "";
-  if (rounded && rounded !== actual) return `${actual}(${rounded})`;
-  return actual;
 }
 
 // ─── 給与計算（労基法準拠）───────────────────────────────────────────────────
@@ -143,7 +113,7 @@ function currentPeriodKey(cd){
 // ─── CSV ──────────────────────────────────────────────────────────────────────
 const minToDecimal = (min) => Math.round(min/60*100)/100;
 
-function downloadCSV(records, settings, shifts=[], label="勤怠記録") {
+function downloadCSV(records, settings, label="勤怠記録") {
   const cur = settings.currency||"¥";
   const wps = settings.workplaces||{};
   const header = [
@@ -168,9 +138,7 @@ function downloadCSV(records, settings, shifts=[], label="勤怠記録") {
         continue;
       }
       const rate=getRateForDate(r.date,wpCfg.rateHistory);
-      const sh=shifts.find(s=>s.date===r.date&&s.wp===wp);
-      const roundedSegs=applyRounding(wpRec.segments||[],sh?.segments,wpCfg.roundIn??true,wpCfg.roundOut??false);
-      const w=calcWage(roundedSegs,wpRec.breaks||[],rate);
+      const w=calcWage(wpRec.segments||[],wpRec.breaks||[],rate);
       const segs=wpRec.segments||[];
       const brkStr=(wpRec.breaks||[]).filter(b=>b.in&&b.out).map(b=>`${b.in}〜${b.out}`).join(" / ")||"なし";
       row.push(
@@ -307,7 +275,7 @@ export default function WorkTracker() {
     const today=getTodayStr();
     const last=localStorage.getItem(BACKUP_KEY);
     if(last!==today&&records.length>0){
-      downloadCSV(records,settings,shifts,"自動バックアップ");
+      downloadCSV(records,settings,"自動バックアップ");
       localStorage.setItem(BACKUP_KEY,today);
     }
   },[]);
@@ -327,11 +295,8 @@ export default function WorkTracker() {
       for(const wp of WPS){
         const wpRec=r[wp];
         if(!wpRec||(wpRec.segments||[]).every(s=>!s.in&&!s.out)) continue;
-        const wpCfg=settings.workplaces[wp]||DEFAULT_WP(wp);
-        const rate=getRateForDate(r.date,wpCfg.rateHistory||[]);
-        const sh=shifts.find(s=>s.date===r.date&&s.wp===wp);
-        const roundedSegs=applyRounding(wpRec.segments||[],sh?.segments,wpCfg.roundIn??true,wpCfg.roundOut??false);
-        const w=calcWage(roundedSegs,wpRec.breaks||[],rate);
+        const rate=getRateForDate(r.date,settings.workplaces[wp]?.rateHistory||[]);
+        const w=calcWage(wpRec.segments||[],wpRec.breaks||[],rate);
         const t=result[wp];
         t.nm+=w.nm;t.om+=w.om;t.ln+=w.ln;t.lno+=w.lno;
         t.normalPay+=w.normalPay;t.otPay+=w.otPay;t.lnPay+=w.lnPay;t.lnoPay+=w.lnoPay;
@@ -339,7 +304,7 @@ export default function WorkTracker() {
       }
     }
     return result;
-  },[periodRecords,settings,shifts]);
+  },[periodRecords,settings]);
 
   const combinedTotals=useMemo(()=>{
     const a=periodTotals.A,b=periodTotals.B;
@@ -381,10 +346,7 @@ export default function WorkTracker() {
   };
 
   const currentRate=useMemo(()=>getRateForDate(form.date,settings.workplaces[form.wp||activeWP]?.rateHistory||[]),[form.date,form.wp,activeWP,settings]);
-  const formWpCfg=settings.workplaces[form.wp||activeWP]||DEFAULT_WP("A");
-  const formShift=useMemo(()=>shifts.find(s=>s.date===form.date&&s.wp===(form.wp||activeWP)),[shifts,form.date,form.wp,activeWP]);
-  const formRoundedSegments=useMemo(()=>applyRounding(form.segments,formShift?.segments,formWpCfg.roundIn??true,formWpCfg.roundOut??false),[form.segments,formShift,formWpCfg]);
-  const formWage=useMemo(()=>calcWage(formRoundedSegments,form.breaks,currentRate),[formRoundedSegments,form.breaks,currentRate]);
+  const formWage=useMemo(()=>calcWage(form.segments,form.breaks,currentRate),[form.segments,form.breaks,currentRate]);
 
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSave=()=>{
@@ -507,14 +469,12 @@ export default function WorkTracker() {
       let totalPay=0,totalMin=0;
       for(const r of wpRecords){
         const rate=getRateForDate(r.date,cfg.rateHistory||[]);
-        const sh=shifts.find(s=>s.date===r.date&&s.wp===wp);
-        const roundedSegs=applyRounding(r[wp].segments||[],sh?.segments,cfg.roundIn??true,cfg.roundOut??false);
-        const w=calcWage(roundedSegs,r[wp].breaks||[],rate);
+        const w=calcWage(r[wp].segments||[],r[wp].breaks||[],rate);
         totalPay+=w.totalPay;totalMin+=w.totalMin;
       }
       return{wp,name:cfg.name,totalPay,totalMin,start,end,payDay:pd,payMonthOffset:offset};
     });
-  },[records,settings,payMonth,shifts]);
+  },[records,settings,payMonth]);
 
   return (
     <div style={{minHeight:"100vh",background:C.bg,color:C.text,
@@ -667,9 +627,6 @@ export default function WorkTracker() {
             {form.segments.map((seg,i)=>{
               // 日またぎ検知：outがinより早い場合
               const hasOvernightHint=seg.in&&seg.out&&toMin(seg.out)<toMin(seg.in);
-              const rIn=formRoundedSegments[i]?.in, rOut=formRoundedSegments[i]?.out;
-              const inRounded=seg.in&&rIn&&rIn!==seg.in;
-              const outRounded=seg.out&&rOut&&rOut!==seg.out;
               return(
               <div key={i} style={{background:"#f3f4f6",border:`1px solid ${C.borderAccent}`,borderRadius:10,padding:"12px",marginBottom:8}}>
                 <div style={{display:"flex",alignItems:"center",marginBottom:8,gap:6}}>
@@ -695,11 +652,6 @@ export default function WorkTracker() {
                     </div>
                   ))}
                 </div>
-                {(inRounded||outRounded)&&(
-                  <div style={{marginTop:8,padding:"6px 10px",borderRadius:6,background:"#fffbeb",border:"1px solid #fde68a",fontSize:12,fontWeight:600,color:"#92400e"}}>
-                    ⏱ シフト定時に合わせて計算：{inRounded&&`出勤 ${seg.in}→${rIn}`}{inRounded&&outRounded&&" / "}{outRounded&&`退勤 ${seg.out}→${rOut}`}
-                  </div>
-                )}
                 {hasOvernightHint&&(
                   <div style={{marginTop:8,padding:"6px 10px",borderRadius:6,background:"#eff6ff",border:"1px solid #bfdbfe",fontSize:12,fontWeight:600,color:"#1d4ed8"}}>
                     🌙 退勤が翌日扱いで計算されます（日またぎ勤務）
@@ -766,10 +718,10 @@ export default function WorkTracker() {
         {view==="history"&&(
           <div>
             <div style={{display:"flex",gap:8,marginBottom:12}}>
-              <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(periodRecords,settings,shifts,`勤怠_${getPeriodLabel(periodKey,activeCD)}`);setIosGuide("export");}} style={{flex:1,padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer"}}>
+              <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(periodRecords,settings,`勤怠_${getPeriodLabel(periodKey,activeCD)}`);setIosGuide("export");}} style={{flex:1,padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer"}}>
                 📥 この期間をCSV出力
               </button>
-              <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(records,settings,shifts,"勤怠_全期間");setIosGuide("export");}} style={{padding:"11px 14px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.muted,fontWeight:600,fontSize:13,cursor:"pointer"}}>全期間</button>
+              <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(records,settings,"勤怠_全期間");setIosGuide("export");}} style={{padding:"11px 14px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.muted,fontWeight:600,fontSize:13,cursor:"pointer"}}>全期間</button>
               <button onClick={()=>setIosGuide("import")} style={{padding:"11px 14px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.blue,fontWeight:600,fontSize:13,cursor:"pointer"}}>📂 取込</button>
               <input ref={importRef} type="file" accept=".csv" onChange={handleImport} style={{display:"none"}}/>
             </div>
@@ -778,11 +730,8 @@ export default function WorkTracker() {
               ?<div style={{textAlign:"center",padding:"40px 0",color:C.dim,fontSize:15,fontWeight:500}}>この期間の記録はありません</div>
               :periodRecords.filter(r=>r[activeWP]&&(r[activeWP].segments||[]).some(s=>s.in||s.out)).map(r=>{
                 const wpRec=r[activeWP];
-                const wpCfg=settings.workplaces[activeWP]||DEFAULT_WP(activeWP);
-                const rate=getRateForDate(r.date,wpCfg.rateHistory||[]);
-                const sh=shifts.find(s=>s.date===r.date&&s.wp===activeWP);
-                const roundedSegs=applyRounding(wpRec.segments||[],sh?.segments,wpCfg.roundIn??true,wpCfg.roundOut??false);
-                const w=calcWage(roundedSegs,wpRec.breaks||[],rate);
+                const rate=getRateForDate(r.date,settings.workplaces[activeWP]?.rateHistory||[]);
+                const w=calcWage(wpRec.segments||[],wpRec.breaks||[],rate);
                 const isOpen=expandedDay===r.id;
                 return(
                   <div key={r.id} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,marginBottom:8,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}>
@@ -790,7 +739,7 @@ export default function WorkTracker() {
                       <div style={{flex:1}}>
                         <div style={{fontSize:15,fontWeight:700}}>{dateLbl(r.date)}</div>
                         <div style={{fontSize:13,fontWeight:500,color:C.muted,marginTop:2}}>
-                          {(wpRec.segments||[]).map((s,i)=>`${fmtPunch(s.in,roundedSegs[i]?.in)||"?"}–${s.out?fmtPunch(s.out,roundedSegs[i]?.out):"勤務中"}`).join(" / ")}
+                          {(wpRec.segments||[]).map(s=>`${s.in||"?"}–${s.out||"勤務中"}`).join(" / ")}
                         </div>
                         {(wpRec.breaks||[]).filter(b=>b.in&&b.out).length>0&&(
                           <div style={{fontSize:12,color:WPC.breakColor,fontWeight:500,marginTop:2}}>☕ 休憩 {fmtH(w.totalBreakMin)}</div>
@@ -847,9 +796,7 @@ export default function WorkTracker() {
                   let totalPay=0,totalMin=0;
                   const dailyRows=wpPeriodRecords.map(r=>{
                     const rate=getRateForDate(r.date,cfg?.rateHistory||[]);
-                    const sh=shifts.find(s=>s.date===r.date&&s.wp===wp);
-                    const roundedSegs=applyRounding(r[wp].segments||[],sh?.segments,cfg?.roundIn??true,cfg?.roundOut??false);
-                    const w=calcWage(roundedSegs,r[wp].breaks||[],rate);
+                    const w=calcWage(r[wp].segments||[],r[wp].breaks||[],rate);
                     totalPay+=w.totalPay;totalMin+=w.totalMin;
                     return{date:r.date,w,rate};
                   }).sort((a,b)=>a.date.localeCompare(b.date));
@@ -888,9 +835,7 @@ export default function WorkTracker() {
                   <div style={{fontSize:28,fontWeight:800,color:C.gold}}>{fmtMoney(WPS.reduce((s,wp)=>{
                     const cfg=settings.workplaces[wp];const cd=cfg?.closingDay??25;
                     return s+records.filter(r=>isInPeriod(r.date,periodKey,cd)&&r[wp]&&(r[wp].segments||[]).some(s=>s.in||s.out)).reduce((ps,r)=>{
-                      const sh=shifts.find(s=>s.date===r.date&&s.wp===wp);
-                      const roundedSegs=applyRounding(r[wp].segments||[],sh?.segments,cfg?.roundIn??true,cfg?.roundOut??false);
-                      const w=calcWage(roundedSegs,r[wp].breaks||[],getRateForDate(r.date,cfg?.rateHistory||[]));
+                      const w=calcWage(r[wp].segments||[],r[wp].breaks||[],getRateForDate(r.date,cfg?.rateHistory||[]));
                       return ps+w.totalPay;
                     },0);
                   },0),settings.currency||"¥")}</div>
@@ -977,22 +922,6 @@ export default function WorkTracker() {
                       <option value={0}>月末</option>
                     </select>
                   </div>
-                  <div style={{marginBottom:14,background:"#f9fafb",border:`1px solid ${C.border}`,borderRadius:10,padding:"12px"}}>
-                    <Lbl>⏱ 打刻丸め（シフト設定がある日のみ適用）</Lbl>
-                    <div style={{fontSize:12,color:C.muted,marginBottom:10,fontWeight:500}}>
-                      シフトで定時を登録した日、定時より早い出勤・遅い退勤を定時扱いで計算します。打刻記録自体は変更されません。
-                    </div>
-                    <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",marginBottom:10}}>
-                      <span style={{fontSize:14,fontWeight:600,color:C.text}}>出勤丸め（早出を切り上げ）</span>
-                      <input type="checkbox" checked={cfg.roundIn??true} onChange={e=>updateWP("roundIn",e.target.checked)}
-                        style={{width:20,height:20,cursor:"pointer",accentColor:WP_COLORS[wp].primary}}/>
-                    </label>
-                    <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
-                      <span style={{fontSize:14,fontWeight:600,color:C.text}}>退勤丸め（残業を切り捨て）</span>
-                      <input type="checkbox" checked={cfg.roundOut??false} onChange={e=>updateWP("roundOut",e.target.checked)}
-                        style={{width:20,height:20,cursor:"pointer",accentColor:WP_COLORS[wp].primary}}/>
-                    </label>
-                  </div>
                   <Lbl>💰 時給履歴（日単位）</Lbl>
                   <div style={{fontSize:12,color:C.muted,marginBottom:8,fontWeight:500}}>日付ごとに時給を設定。その日以降のレコードに自動適用されます。</div>
                   {[...(cfg.rateHistory||[])].sort((a,b)=>b.from.localeCompare(a.from)).map(r=>(
@@ -1020,7 +949,7 @@ export default function WorkTracker() {
                 📂 CSVを修正して再取込も可能<br/>
                 🔄 アプリを開くたびに自動バックアップ
               </div>
-              <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(records,settings,shifts,"勤怠_全データバックアップ");setIosGuide("export");}} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer",marginBottom:8}}>
+              <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(records,settings,"勤怠_全データバックアップ");setIosGuide("export");}} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer",marginBottom:8}}>
                 📥 全データをCSVバックアップ
               </button>
               <button onClick={()=>setIosGuide("import")} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.blue,fontWeight:700,fontSize:14,cursor:"pointer"}}>
@@ -1052,7 +981,7 @@ export default function WorkTracker() {
         {/* ── HELP ────────────────────────────────────────────────────────── */}
         {view==="help"&&(
           <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
-            <HelpSection title="📱 基本の使い方" C={C} wpc={WPC}>
+            <HelpSection title="📱 基本の使い方" C={C}>
               {[
                 {n:"1",h:"出勤時：職場を選んで「今」ボタン",p:"上部の職場ボタンで職場A/Bを切り替え、出勤欄の「今」をタップ。"},
                 {n:"2",h:"保存ボタンで即保存",p:"各区間の右上にある「保存」ボタン、または「記録を保存」で保存。"},
@@ -1065,7 +994,7 @@ export default function WorkTracker() {
                 </div>
               ))}
             </HelpSection>
-            <HelpSection title="💰 給与計算ルール" C={C} wpc={WPC}>
+            <HelpSection title="💰 給与計算ルール" C={C}>
               <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:"6px 16px",fontSize:13}}>
                 {[["通常時間（〜8h）","× 1.00"],["残業（8h超）","× 1.25"],["深夜（22時〜翌5時）","× 1.25"],["深夜残業（両方）","× 1.50"]].map(([k,v],i)=>(
                   <React.Fragment key={i}>
@@ -1075,7 +1004,7 @@ export default function WorkTracker() {
                 ))}
               </div>
             </HelpSection>
-            <HelpSection title="📥 CSVの使い方" C={C} wpc={WPC}>
+            <HelpSection title="📥 CSVの使い方" C={C}>
               <div style={{fontSize:13,color:C.muted,lineHeight:1.9}}>
                 <div>① 履歴タブ → 「この期間をCSV出力」</div>
                 <div>② ExcelやGoogleスプレッドシートで修正</div>
@@ -1085,7 +1014,7 @@ export default function WorkTracker() {
                 </div>
               </div>
             </HelpSection>
-            <HelpSection title="⚠️ 注意事項" C={C} wpc={WPC}>
+            <HelpSection title="⚠️ 注意事項" C={C}>
               <div style={{fontSize:13,color:C.muted,lineHeight:1.9}}>
                 <div>• 日またぎ勤務（例：23:00〜翌7:00）も正確に計算されます</div>
                 <div>• ブラウザのデータ消去でデータが消えます。定期的にCSVバックアップを推奨</div>
@@ -1118,10 +1047,10 @@ function AddRateForm({cfg,updateWP,inp,C,wp}){
 
 function Lbl({children}){return <div style={{fontSize:13,fontWeight:600,color:"#4b5563",letterSpacing:"0.5px",marginBottom:6}}>{children}</div>;}
 
-function HelpSection({title,children,C,wpc}){
+function HelpSection({title,children,C}){
   return(
     <div style={{marginBottom:20}}>
-      <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px solid ${wpc.primary}`}}>{title}</div>
+      <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px solid ${WPC.primary}`}}>{title}</div>
       {children}
     </div>
   );
@@ -1248,13 +1177,11 @@ function ShiftTab({shifts,setShifts,patterns,setPatterns,settings,shiftView,setS
     const filtered = records.filter(r=>r.date>=periodBounds.start&&r.date<=periodBounds.end&&r[shiftWP]&&(r[shiftWP].segments||[]).some(s=>s.in||s.out));
     for(const r of filtered){
       const rate=getRateForDate(r.date,wpCfg?.rateHistory||[]);
-      const sh=shifts.find(s=>s.date===r.date&&s.wp===shiftWP);
-      const roundedSegs=applyRounding(r[shiftWP].segments||[],sh?.segments,wpCfg?.roundIn??true,wpCfg?.roundOut??false);
-      const w=calcWage(roundedSegs,r[shiftWP].breaks||[],rate);
+      const w=calcWage(r[shiftWP].segments||[],r[shiftWP].breaks||[],rate);
       totalPay+=w.totalPay; totalMin+=w.totalMin;
     }
     return{totalPay,totalMin};
-  },[records,shifts,shiftWP,shiftMonth,periodBounds,wpCfg]);
+  },[records,shiftWP,shiftMonth,periodBounds]);
 
   // シフト保存
   const saveShift=(sh)=>{
