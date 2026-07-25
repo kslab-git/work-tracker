@@ -495,6 +495,31 @@ export default function WorkTracker() {
     showToast("設定を保存しました");
   };
 
+  // ── 緊急対応：IndexedDB移行前のLocalStorage旧データをCSVで復旧する ─────────
+  // v17でIndexedDBに移行した際、旧wt4_*キーのLocalStorageデータを
+  // 読み込むコードごと削除してしまったため、ブラウザに残ったままの
+  // 旧データを検出してCSV出力できるようにする救済用ボタン。
+  const oldLocalStorageRecords=useMemo(()=>{
+    try{
+      const raw=localStorage.getItem("wt4_records");
+      const parsed=raw?JSON.parse(raw):[];
+      return Array.isArray(parsed)?parsed:[];
+    }catch{return[];}
+  },[]);
+  const handleRecoverOldData=()=>{
+    if(oldLocalStorageRecords.length===0){
+      showToast("LocalStorageに旧データが見つかりませんでした","err");
+      return;
+    }
+    let oldSettings=settings;
+    try{
+      const rawSettings=localStorage.getItem("wt4_settings");
+      if(rawSettings) oldSettings={...DEFAULT_SETTINGS,...JSON.parse(rawSettings)};
+    }catch{}
+    pendingActionRef.current=()=>downloadCSV(oldLocalStorageRecords,oldSettings,"旧データ復旧");
+    setIosGuide("export");
+  };
+
   const handleImport=(e)=>{
     const file=e.target.files[0];if(!file)return;
     const reader=new FileReader();
@@ -1047,6 +1072,16 @@ export default function WorkTracker() {
 
             <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16}}>
               <Lbl>📥 データ管理</Lbl>
+              {oldLocalStorageRecords.length>0&&(
+                <div style={{marginBottom:12}}>
+                  <div style={{fontSize:12,color:"#92400e",marginBottom:8,fontWeight:600,background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"10px"}}>
+                    ⚠️ IndexedDB移行前の旧データ（{oldLocalStorageRecords.length}件）がこの端末に残っています。下のボタンでCSV復旧し、「CSVから取込」で読み込んでください。
+                  </div>
+                  <button onClick={handleRecoverOldData} style={{width:"100%",padding:"11px 0",borderRadius:10,border:"1px solid #fecaca",background:"#fff5f5",color:"#dc2626",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+                    ⚠️ 旧データ（LocalStorage）をCSV復旧
+                  </button>
+                </div>
+              )}
               <div style={{fontSize:12,color:C.muted,marginBottom:10,fontWeight:500,background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:8,padding:"10px"}}>
                 ✅ 完全無料・費用ゼロ<br/>
                 📥 CSVダウンロード → ExcelやGoogleスプレッドシートで開けます<br/>
