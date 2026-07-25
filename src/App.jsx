@@ -559,6 +559,43 @@ export default function WorkTracker() {
     showToast(`シフト${oldLocalStorageShifts.length}件・パターン${oldPatternCount}件を復元しました`);
   };
 
+  // ── 緊急対応：旧設定（職場名・時給履歴・締め日・支払日・打刻丸め設定）を復元 ──
+  // wt4_settings自体はworkplaces以外にcurrency等も含むが、
+  // 復元対象は明示された職場設定の項目のみに限定する。
+  const oldLocalStorageSettingsRaw=useMemo(()=>{
+    try{ return localStorage.getItem("wt4_settings"); }catch{ return null; }
+  },[]);
+  const oldLocalStorageSettings=useMemo(()=>{
+    if(!oldLocalStorageSettingsRaw) return null;
+    try{
+      const parsed=JSON.parse(oldLocalStorageSettingsRaw);
+      return(parsed&&parsed.workplaces)?parsed:null;
+    }catch{ return null; }
+  },[oldLocalStorageSettingsRaw]);
+  const handleRecoverOldSettings=()=>{
+    if(!oldLocalStorageSettings){
+      showToast("LocalStorageに旧設定データが見つかりませんでした","err");
+      return;
+    }
+    const fields=["name","rateHistory","closingDay","payDay","payMonthOffset","roundIn","roundOut"];
+    const mergeWP=(current,old)=>{
+      if(!old) return current;
+      const merged={...current};
+      for(const f of fields){
+        if(old[f]!==undefined) merged[f]=old[f];
+      }
+      return merged;
+    };
+    const oldWps=oldLocalStorageSettings.workplaces||{};
+    const nextSettings={...settings,workplaces:{
+      A:mergeWP(settings.workplaces.A,oldWps.A),
+      B:mergeWP(settings.workplaces.B,oldWps.B),
+    }};
+    setSettings(nextSettings);
+    setSettingsForm(JSON.parse(JSON.stringify(nextSettings)));
+    showToast("旧設定（職場名・時給履歴・締め日・支払日・打刻丸め設定）を復元しました");
+  };
+
   const handleImport=(e)=>{
     const file=e.target.files[0];if(!file)return;
     const reader=new FileReader();
@@ -1118,6 +1155,35 @@ export default function WorkTracker() {
                   </div>
                   <button onClick={handleRecoverOldData} style={{width:"100%",padding:"11px 0",borderRadius:10,border:"1px solid #fecaca",background:"#fff5f5",color:"#dc2626",fontWeight:700,fontSize:14,cursor:"pointer"}}>
                     ⚠️ 旧データ（LocalStorage）をCSV復旧
+                  </button>
+                </div>
+              )}
+              <div style={{marginBottom:12,background:"#f9fafb",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px"}}>
+                <div style={{fontSize:12,fontWeight:700,color:oldLocalStorageSettings?"#15803d":"#6b7280"}}>
+                  旧設定データ（wt4_settings）：{oldLocalStorageSettings?"あり":"なし"}
+                </div>
+                {oldLocalStorageSettings&&(
+                  <div style={{fontSize:11,color:C.muted,marginTop:6,lineHeight:1.6}}>
+                    {["A","B"].map(wp=>{
+                      const w=oldLocalStorageSettings.workplaces?.[wp];
+                      if(!w) return null;
+                      const latestRate=w.rateHistory?.[w.rateHistory.length-1]?.rate;
+                      return(
+                        <div key={wp}>
+                          {wp}：{w.name||"?"} / 時給¥{latestRate??"?"} / {w.closingDay===0?"月末":`${w.closingDay}日`}締め / {w.payMonthOffset===0?"当月":"翌月"}{w.payDay===0?"月末":`${w.payDay}日`}払い
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              {oldLocalStorageSettings&&(
+                <div style={{marginBottom:12}}>
+                  <div style={{fontSize:12,color:"#92400e",marginBottom:8,fontWeight:600,background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"10px"}}>
+                    ⚠️ 旧設定（職場名・時給履歴・締め日・支払日等）がこの端末に残っています。給与計算の精度に関わるため復元を推奨します。
+                  </div>
+                  <button onClick={handleRecoverOldSettings} style={{width:"100%",padding:"11px 0",borderRadius:10,border:"1px solid #fecaca",background:"#fff5f5",color:"#dc2626",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+                    ⚠️ 旧設定データを復元
                   </button>
                 </div>
               )}
