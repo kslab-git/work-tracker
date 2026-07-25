@@ -303,6 +303,7 @@ export default function WorkTracker() {
   const [expandedDay,setExpandedDay]=useState(null);
   const [warnings,setWarnings]=useState([]);
   const [iosGuide,setIosGuide]=useState(null); // "export" | "import" | null
+  const [alarmLastCheckAt,setAlarmLastCheckAt]=useState(null); // デバッグ表示用：アラームチェックの最終実行時刻
   const pendingActionRef=useRef(null);
   const [settingsForm,setSettingsForm]=useState(()=>JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
   const importRef=useRef();
@@ -432,6 +433,7 @@ export default function WorkTracker() {
       const today=getTodayStr();
       const now=new Date();
       const nowMin=now.getHours()*60+now.getMinutes();
+      setAlarmLastCheckAt(now); // デバッグ表示用：チェック処理が生きているかを可視化する
       for(const wp of WPS){
         const cfg=settings.workplaces[wp];
         if(!cfg?.breakAlarmEnabled) continue;
@@ -880,6 +882,34 @@ export default function WorkTracker() {
             <span style={{fontSize:11,color:"#15803d",background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"3px 8px",fontWeight:600}}>📥 CSV対応</span>
           </div>
           <div style={{height:1,background:`linear-gradient(90deg,${WPC.primary},transparent)`}}/>
+        </div>
+
+        {/* 🔧 デバッグ表示（休憩前アラーム原因調査用・一時的。原因特定後に削除すること） */}
+        <div style={{background:"#111827",color:"#e5e7eb",fontFamily:"monospace",fontSize:11,lineHeight:1.7,borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+          <div style={{fontWeight:700,color:"#facc15",marginBottom:4}}>🔧 アラームデバッグ（一時表示）</div>
+          <div>現在時刻：{(()=>{const n=new Date();return `${pad(n.getHours())}:${pad(n.getMinutes())}:${pad(n.getSeconds())}`;})()}</div>
+          <div>最終チェック時刻：{alarmLastCheckAt?`${pad(alarmLastCheckAt.getHours())}:${pad(alarmLastCheckAt.getMinutes())}:${pad(alarmLastCheckAt.getSeconds())}`:"（まだチェックが実行されていません）"}</div>
+          {WPS.map(wp=>{
+            const cfg=settings.workplaces[wp];
+            const today=getTodayStr();
+            const sh=shifts.find(s=>s.date===today&&s.wp===wp);
+            const minutesBefore=cfg?.breakAlarmMinutesBefore??5;
+            const key=`${today}_${wp}`;
+            let targetLabel="（本日のシフトに休憩開始時刻が未設定）";
+            if(sh?.breakStart){
+              const breakStartMin=toMin(sh.breakStart);
+              const targetMin=((breakStartMin-minutesBefore)%1440+1440)%1440;
+              targetLabel=`${pad(Math.floor(targetMin/60))}:${pad(targetMin%60)}（休憩開始${sh.breakStart}の${minutesBefore}分前）`;
+            }
+            return(
+              <div key={wp} style={{marginTop:4,paddingTop:4,borderTop:"1px solid #374151"}}>
+                <div>[{wp}] ON/OFF：{String(cfg?.breakAlarmEnabled??false)}／何分前：{minutesBefore}分</div>
+                <div>[{wp}] 本日のbreakStart：{sh?.breakStart||"（本日のシフトが無い、または休憩開始時刻が未入力）"}</div>
+                <div>[{wp}] 次のアラーム予定：{targetLabel}</div>
+                <div>[{wp}] 本日の発火状況：{alarmFiredRef.current.has(key)?"発火済み":"未発火"}</div>
+              </div>
+            );
+          })}
         </div>
 
         {/* 職場切り替え（打刻・履歴タブ時のみ） */}
