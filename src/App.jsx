@@ -520,6 +520,45 @@ export default function WorkTracker() {
     setIosGuide("export");
   };
 
+  // シフト予定・パターンはCSVインポート機能が無いため、LocalStorageから直接読み込んで
+  // 現在のシフト・パターン一覧にマージ復元する（[date,wp]・idが重複する場合は現在のデータを優先）
+  const oldLocalStorageShifts=useMemo(()=>{
+    try{
+      const raw=localStorage.getItem("wt4_shifts");
+      const parsed=raw?JSON.parse(raw):[];
+      return Array.isArray(parsed)?parsed:[];
+    }catch{return[];}
+  },[]);
+  const oldLocalStoragePatterns=useMemo(()=>{
+    try{
+      const raw=localStorage.getItem("wt4_patterns");
+      const parsed=raw?JSON.parse(raw):{A:[],B:[]};
+      return{A:Array.isArray(parsed?.A)?parsed.A:[],B:Array.isArray(parsed?.B)?parsed.B:[]};
+    }catch{return{A:[],B:[]};}
+  },[]);
+  const handleRecoverOldShifts=()=>{
+    const oldPatternCount=oldLocalStoragePatterns.A.length+oldLocalStoragePatterns.B.length;
+    if(oldLocalStorageShifts.length===0&&oldPatternCount===0){
+      showToast("LocalStorageに旧シフトデータが見つかりませんでした","err");
+      return;
+    }
+    setShifts(prev=>{
+      const existKeys=new Set(prev.map(s=>`${s.date}_${s.wp}`));
+      const toAdd=oldLocalStorageShifts.filter(s=>!existKeys.has(`${s.date}_${s.wp}`));
+      return[...prev,...toAdd];
+    });
+    setPatterns(prev=>{
+      const merged={A:[...(prev.A||[])],B:[...(prev.B||[])]};
+      for(const wp of["A","B"]){
+        const existIds=new Set(merged[wp].map(p=>p.id));
+        const toAdd=(oldLocalStoragePatterns[wp]||[]).filter(p=>!existIds.has(p.id));
+        merged[wp]=[...merged[wp],...toAdd];
+      }
+      return merged;
+    });
+    showToast(`シフト${oldLocalStorageShifts.length}件・パターン${oldPatternCount}件を復元しました`);
+  };
+
   const handleImport=(e)=>{
     const file=e.target.files[0];if(!file)return;
     const reader=new FileReader();
@@ -1079,6 +1118,16 @@ export default function WorkTracker() {
                   </div>
                   <button onClick={handleRecoverOldData} style={{width:"100%",padding:"11px 0",borderRadius:10,border:"1px solid #fecaca",background:"#fff5f5",color:"#dc2626",fontWeight:700,fontSize:14,cursor:"pointer"}}>
                     ⚠️ 旧データ（LocalStorage）をCSV復旧
+                  </button>
+                </div>
+              )}
+              {(oldLocalStorageShifts.length>0||oldLocalStoragePatterns.A.length>0||oldLocalStoragePatterns.B.length>0)&&(
+                <div style={{marginBottom:12}}>
+                  <div style={{fontSize:12,color:"#92400e",marginBottom:8,fontWeight:600,background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"10px"}}>
+                    ⚠️ 旧シフトデータ（シフト{oldLocalStorageShifts.length}件・パターン{oldLocalStoragePatterns.A.length+oldLocalStoragePatterns.B.length}件）がこの端末に残っています。下のボタンで現在のシフト・パターンに復元できます。
+                  </div>
+                  <button onClick={handleRecoverOldShifts} style={{width:"100%",padding:"11px 0",borderRadius:10,border:"1px solid #fecaca",background:"#fff5f5",color:"#dc2626",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+                    ⚠️ 旧シフトデータを復元
                   </button>
                 </div>
               )}
