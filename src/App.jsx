@@ -1,12 +1,17 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 
-// ─── Storage Keys ──────────────────────────────────────────────────────────────
-const STORAGE_KEY  = "wt4_records";
-const SETTINGS_KEY = "wt4_settings";
-const PERIOD_KEY   = "wt4_period";
-const BACKUP_KEY   = "wt4_last_backup";
-const SHIFT_KEY    = "wt4_shifts";
-const PATTERNS_KEY = "wt4_patterns";
+// ─── IndexedDB 設定 ────────────────────────────────────────────────────────────
+// v17でLocalStorage（wt4_*）からIndexedDBへ移行。
+// 旧バージョンのデータはCSVエクスポート→インポートで手動移行する運用のため、
+// LocalStorageからの自動読み込みは実装しない。
+const DB_NAME    = "kslab_work_tracker";
+const DB_VERSION = 1;
+const STORES = {
+  RECORDS:  "records",
+  SHIFTS:   "shifts",
+  PATTERNS: "patterns",
+  SETTINGS: "settings",
+};
 
 // 職場定義
 const WPS = ["A","B"];
@@ -225,30 +230,69 @@ function generateShiftCSV(shifts, patterns, settings) {
   return BOM + csv;
 }
 
+// ─── IndexedDB ヘルパー ────────────────────────────────────────────────────────
+// DBを開く（初回はストア構成を作成する）
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORES.RECORDS))  db.createObjectStore(STORES.RECORDS,  { keyPath: "id" });
+      if (!db.objectStoreNames.contains(STORES.SHIFTS))   db.createObjectStore(STORES.SHIFTS,   { keyPath: ["date", "wp"] });
+      if (!db.objectStoreNames.contains(STORES.PATTERNS)) db.createObjectStore(STORES.PATTERNS, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(STORES.SETTINGS)) db.createObjectStore(STORES.SETTINGS, { keyPath: "key" });
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror   = (e) => reject(e.target.error);
+  });
+}
+
+// 指定ストアの全件を取得する
+function dbGetAll(db, storeName) {
+  return new Promise((resolve, reject) => {
+    const tx  = db.transaction(storeName, "readonly");
+    const req = tx.objectStore(storeName).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+// 指定ストアの中身を渡された配列で丸ごと置き換える（クリア→全件put）
+function dbReplaceAll(db, storeName, items) {
+  return new Promise((resolve, reject) => {
+    const tx    = db.transaction(storeName, "readwrite");
+    const store = tx.objectStore(storeName);
+    store.clear();
+    for (const item of items) store.put(item);
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+
+// settingsストアはキーバリュー的に使用する（workplaces / currency / last_backup / period）
+function dbPutSetting(db, key, value) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.SETTINGS, "readwrite");
+    tx.objectStore(STORES.SETTINGS).put({ key, value });
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function WorkTracker() {
-  const [records,setRecords]=useState(()=>{try{return JSON.parse(localStorage.getItem(STORAGE_KEY))||[];}catch{return[];}});
-  const [settings,setSettings]=useState(()=>{
-    try{
-      const s={...DEFAULT_SETTINGS,...JSON.parse(localStorage.getItem(SETTINGS_KEY)||"{}")};
-      if(!s.workplaces) s.workplaces={A:DEFAULT_WP("A"),B:DEFAULT_WP("B")};
-      if(!s.workplaces.A) s.workplaces.A=DEFAULT_WP("A");
-      if(!s.workplaces.B) s.workplaces.B=DEFAULT_WP("B");
-      return s;
-    }catch{return DEFAULT_SETTINGS;}
-  });
-  const [shifts,setShifts]=useState(()=>{try{return JSON.parse(localStorage.getItem(SHIFT_KEY))||[];}catch{return[];}});
-  const [patterns,setPatterns]=useState(()=>{try{return JSON.parse(localStorage.getItem(PATTERNS_KEY))||{A:[],B:[]};}catch{return{A:[],B:[]};}});
+  const dbRef=useRef(null);
+  const [dbReady,setDbReady]=useState(false); // IndexedDBからの初回読み込みが完了したか
+  const [records,setRecords]=useState([]);
+  const [settings,setSettings]=useState(DEFAULT_SETTINGS);
+  const [shifts,setShifts]=useState([]);
+  const [patterns,setPatterns]=useState({A:[],B:[]});
   const [shiftView,setShiftView]=useState("calendar");
   const [shiftMonth,setShiftMonth]=useState(()=>{const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}`;});
   const [shiftWP,setShiftWP]=useState("A");
   const [editShift,setEditShift]=useState(null);
   const [editPattern,setEditPattern]=useState(null);
-  const [periodKey,setPeriodKey]=useState(()=>{
-    const s={...DEFAULT_SETTINGS,...JSON.parse(localStorage.getItem(SETTINGS_KEY)||"{}")};
-    const cd=s.workplaces?.A?.closingDay??25;
-    return localStorage.getItem(PERIOD_KEY)||currentPeriodKey(cd);
-  });
+  const [periodKey,setPeriodKey]=useState(()=>currentPeriodKey(25));
   const [view,setView]=useState("input");
   const [activeWP,setActiveWP]=useState("A");
   const [summaryMode,setSummaryMode]=useState("closing"); // "closing" | "payMonth"
@@ -258,27 +302,76 @@ export default function WorkTracker() {
   const [warnings,setWarnings]=useState([]);
   const [iosGuide,setIosGuide]=useState(null); // "export" | "import" | null
   const pendingActionRef=useRef(null);
-  const [settingsForm,setSettingsForm]=useState(()=>JSON.parse(JSON.stringify(settings)));
+  const [settingsForm,setSettingsForm]=useState(()=>JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
   const importRef=useRef();
 
   const emptyForm=()=>({id:null,date:getTodayStr(),wp:activeWP,segments:[{in:"",out:""}],breaks:[],memo:""});
   const [form,setForm]=useState(emptyForm());
 
-  useEffect(()=>{localStorage.setItem(STORAGE_KEY,JSON.stringify(records));},[records]);
-  useEffect(()=>{localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));},[settings]);
-  useEffect(()=>{localStorage.setItem(SHIFT_KEY,JSON.stringify(shifts));},[shifts]);
-  useEffect(()=>{localStorage.setItem(PATTERNS_KEY,JSON.stringify(patterns));},[patterns]);
-  useEffect(()=>{localStorage.setItem(PERIOD_KEY,periodKey);},[periodKey]);
-
-  // 毎日自動バックアップ
+  // ── IndexedDB 初回読み込み ──────────────────────────────────────────────────
   useEffect(()=>{
-    const today=getTodayStr();
-    const last=localStorage.getItem(BACKUP_KEY);
-    if(last!==today&&records.length>0){
-      downloadCSV(records,settings,"自動バックアップ");
-      localStorage.setItem(BACKUP_KEY,today);
-    }
+    let cancelled=false;
+    (async()=>{
+      const db=await openDB();
+      if(cancelled) return;
+      dbRef.current=db;
+
+      const [recordsData,shiftsData,patternsData,settingsRows]=await Promise.all([
+        dbGetAll(db,STORES.RECORDS),
+        dbGetAll(db,STORES.SHIFTS),
+        dbGetAll(db,STORES.PATTERNS),
+        dbGetAll(db,STORES.SETTINGS),
+      ]);
+      if(cancelled) return;
+
+      const settingsMap={};
+      for(const row of settingsRows) settingsMap[row.key]=row.value;
+
+      const loadedSettings={...DEFAULT_SETTINGS};
+      if(settingsMap.workplaces) loadedSettings.workplaces=settingsMap.workplaces;
+      if(settingsMap.currency)   loadedSettings.currency=settingsMap.currency;
+      if(!loadedSettings.workplaces.A) loadedSettings.workplaces.A=DEFAULT_WP("A");
+      if(!loadedSettings.workplaces.B) loadedSettings.workplaces.B=DEFAULT_WP("B");
+
+      const loadedPatterns={A:[],B:[]};
+      for(const pat of patternsData){
+        const wp=pat.wp==="B"?"B":"A";
+        loadedPatterns[wp].push(pat);
+      }
+
+      const cd=loadedSettings.workplaces.A?.closingDay??25;
+      const loadedPeriod=settingsMap.period||currentPeriodKey(cd);
+
+      setRecords(recordsData);
+      setShifts(shiftsData);
+      setPatterns(loadedPatterns);
+      setSettings(loadedSettings);
+      setSettingsForm(JSON.parse(JSON.stringify(loadedSettings)));
+      setPeriodKey(loadedPeriod);
+
+      // 毎日自動バックアップ（最終バックアップ日はsettingsストアのlast_backupキーで管理）
+      const today=getTodayStr();
+      if(settingsMap.last_backup!==today&&recordsData.length>0){
+        downloadCSV(recordsData,loadedSettings,"自動バックアップ");
+        await dbPutSetting(db,"last_backup",today);
+      }
+
+      setDbReady(true);
+    })();
+    return ()=>{cancelled=true;};
   },[]);
+
+  // ── IndexedDBへの書き込み（初回読み込み完了後のみ有効）──────────────────────
+  useEffect(()=>{if(dbReady&&dbRef.current) dbReplaceAll(dbRef.current,STORES.RECORDS,records);},[records,dbReady]);
+  useEffect(()=>{if(dbReady&&dbRef.current) dbPutSetting(dbRef.current,"workplaces",settings.workplaces);},[settings,dbReady]);
+  useEffect(()=>{if(dbReady&&dbRef.current) dbPutSetting(dbRef.current,"currency",settings.currency);},[settings,dbReady]);
+  useEffect(()=>{if(dbReady&&dbRef.current) dbReplaceAll(dbRef.current,STORES.SHIFTS,shifts);},[shifts,dbReady]);
+  useEffect(()=>{
+    if(!dbReady||!dbRef.current) return;
+    const flatPatterns=[...(patterns.A||[]).map(p=>({...p,wp:"A"})),...(patterns.B||[]).map(p=>({...p,wp:"B"}))];
+    dbReplaceAll(dbRef.current,STORES.PATTERNS,flatPatterns);
+  },[patterns,dbReady]);
+  useEffect(()=>{if(dbReady&&dbRef.current) dbPutSetting(dbRef.current,"period",periodKey);},[periodKey,dbReady]);
 
   const showToast=(msg,type="ok")=>{setToast({msg,type});setTimeout(()=>setToast({msg:"",type:"ok"}),2500);};
 
@@ -475,6 +568,17 @@ export default function WorkTracker() {
       return{wp,name:cfg.name,totalPay,totalMin,start,end,payDay:pd,payMonthOffset:offset};
     });
   },[records,settings,payMonth]);
+
+  // IndexedDBからの初回読み込みが完了するまでは簡易ローディング表示を出す
+  if(!dbReady){
+    return(
+      <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",
+        background:"#f5f6f8",color:"#6b7280",fontFamily:"'Noto Sans JP','Hiragino Kaku Gothic ProN',sans-serif",
+        fontSize:14,fontWeight:600}}>
+        読み込み中...
+      </div>
+    );
+  }
 
   return (
     <div style={{minHeight:"100vh",background:C.bg,color:C.text,
