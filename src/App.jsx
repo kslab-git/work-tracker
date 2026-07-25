@@ -494,34 +494,69 @@ export default function WorkTracker() {
   const rmSeg=(i)=>setForm(f=>({...f,segments:f.segments.filter((_,idx)=>idx!==i)}));
   const stampSeg=(i,field)=>updSeg(i,field,nowStr());
 
+  // breaksは内部的には従来通り{in,out}のまま保持する（保存データ形式は変更しない）。
+  // 入力UIのみ「開始時刻＋今回の休憩分数」に変更し、outはin+分数から自動計算して埋める。
   const updBrk=(i,f,v)=>{
     setForm(fm=>{const b=[...fm.breaks];b[i]={...b[i],[f]:v};return{...fm,breaks:b};});
-    if(f==="out"){
-      setForm(fm=>{
-        const brk=fm.breaks[i];
-        if(!brk?.in&&v){setWarnings(w=>[...w,`休憩${i+1}：開始時間が未入力です`]);setTimeout(()=>setWarnings([]),3000);}
-        return fm;
-      });
-    }
   };
   const addBrk=()=>setForm(f=>({...f,breaks:[...f.breaks,{in:"",out:""}]}));
   const rmBrk=(i)=>setForm(f=>({...f,breaks:f.breaks.filter((_,idx)=>idx!==i)}));
-  const stampBrk=(i,field)=>{
-    if(field==="out"){
-      const brk=form.breaks[i];
-      if(!brk?.in){setWarnings([`休憩${i+1}：開始時間を先に入力してください`]);setTimeout(()=>setWarnings([]),3000);return;}
+
+  // 休憩開始時刻を変更：既にoutがある場合は現在の休憩分数を維持したまま終了時刻を再計算する
+  const updBrkStart=(i,newIn)=>{
+    setForm(fm=>{
+      const b=[...fm.breaks];
+      const old=b[i];
+      let newOut=old.out;
+      if(newIn&&old.in&&old.out){
+        let dur=toMin(old.out)-toMin(old.in);
+        if(dur<0) dur+=24*60;
+        const endMin=(toMin(newIn)+dur)%(24*60);
+        newOut=`${pad(Math.floor(endMin/60))}:${pad(endMin%60)}`;
+      }
+      b[i]={...old,in:newIn,out:newOut};
+      return{...fm,breaks:b};
+    });
+  };
+  const stampBrk=(i)=>updBrkStart(i,nowStr());
+
+  // 休憩分数を入力：開始時刻＋分数から終了時刻を自動計算してoutに保存する
+  const updBrkDuration=(i,minutesStr)=>{
+    const brk=form.breaks[i];
+    if(!brk?.in){
+      setWarnings([`休憩${i+1}：開始時間を先に入力してください`]);
+      setTimeout(()=>setWarnings([]),3000);
+      return;
     }
-    updBrk(i,field,nowStr());
+    const minutes=Number(minutesStr);
+    if(!minutesStr||isNaN(minutes)||minutes<=0){
+      updBrk(i,"out","");
+      return;
+    }
+    const endMin=(toMin(brk.in)+minutes)%(24*60);
+    updBrk(i,"out",`${pad(Math.floor(endMin/60))}:${pad(endMin%60)}`);
   };
 
   const currentRate=useMemo(()=>getRateForDate(form.date,settings.workplaces[form.wp||activeWP]?.rateHistory||[]),[form.date,form.wp,activeWP,settings]);
   const formWage=useMemo(()=>calcWage(form.segments,form.breaks,currentRate),[form.segments,form.breaks,currentRate]);
+
+  // その日・その職場のシフト予定にある「1日の合計休憩可能時間」と、実際の入力合計を比較する
+  const matchedShiftForBreak=useMemo(()=>shifts.find(s=>s.date===form.date&&s.wp===(form.wp||activeWP)),[shifts,form.date,form.wp,activeWP]);
+  const breakAllowanceMin=matchedShiftForBreak?.breakMin||0;
+  const remainingBreakMin=breakAllowanceMin-formWage.totalBreakMin;
 
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSave=()=>{
     if(!form.segments.some(s=>s.in||s.out)) return;
     const brkWarns=form.breaks.map((b,i)=>(!b.in&&b.out)?`休憩${i+1}：開始時間が未入力です`:null).filter(Boolean);
     if(brkWarns.length>0){setWarnings(brkWarns);setTimeout(()=>setWarnings([]),4000);return;}
+
+    // 休憩可能時間（シフト予定のbreakMin）を超える入力は保存をブロックする
+    if(matchedShiftForBreak&&breakAllowanceMin>0&&formWage.totalBreakMin>breakAllowanceMin){
+      setWarnings([`休憩時間の合計（${formWage.totalBreakMin}分）が休憩可能時間（${breakAllowanceMin}分）を超えています`]);
+      setTimeout(()=>setWarnings([]),4000);
+      return;
+    }
 
     const wp=form.wp||activeWP;
     let updatedRecords,toastMsg="保存しました";
@@ -947,29 +982,50 @@ export default function WorkTracker() {
 
             <Lbl>☕ 休憩時間</Lbl>
             {form.breaks.length===0&&<div style={{fontSize:13,color:C.dim,marginBottom:8,fontWeight:500}}>休憩なし</div>}
-            {form.breaks.map((brk,i)=>(
+            {form.breaks.map((brk,i)=>{
+              const durationMin=(brk.in&&brk.out)?((toMin(brk.out)-toMin(brk.in)+1440)%1440):"";
+              return(
               <div key={i} style={{background:WPC.breakBg,border:`1px solid ${WPC.breakBorder}`,borderRadius:10,padding:"12px",marginBottom:8}}>
                 <div style={{display:"flex",alignItems:"center",marginBottom:8,gap:6}}>
                   <span style={{fontSize:13,fontWeight:600,color:WPC.breakColor}}>休憩 {i+1}</span>
-                  {brk.in&&brk.out&&<span style={{fontSize:12,color:WPC.breakColor,fontWeight:600}}>（{fmtH(toMin(brk.out)>=toMin(brk.in)?toMin(brk.out)-toMin(brk.in):toMin(brk.out)+1440-toMin(brk.in))}）</span>}
+                  {brk.in&&brk.out&&<span style={{fontSize:12,color:WPC.breakColor,fontWeight:600}}>（{fmtH(durationMin)}）</span>}
                   <div style={{marginLeft:"auto"}}>
                     <button onClick={()=>rmBrk(i)} style={{background:"none",border:"none",color:C.red,fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>
                   </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                  {[["in","開始"],["out","終了"]].map(([field,lbl])=>(
-                    <div key={field}>
-                      <div style={{fontSize:12,fontWeight:600,color:WPC.breakColor,marginBottom:4}}>{lbl}</div>
-                      <div style={{display:"flex",gap:4}}>
-                        <input type="time" value={brk[field]} onChange={e=>updBrk(i,field,e.target.value)} style={{...inp,flex:1,borderColor:WPC.breakBorder}}/>
-                        <button onClick={()=>stampBrk(i,field)} style={{...stampBtn(C),borderColor:WPC.breakBorder,color:WPC.breakColor}}>現在</button>
-                      </div>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:600,color:WPC.breakColor,marginBottom:4}}>休憩開始</div>
+                    <div style={{display:"flex",gap:4}}>
+                      <input type="time" value={brk.in} onChange={e=>updBrkStart(i,e.target.value)} style={{...inp,flex:1,borderColor:WPC.breakBorder}}/>
+                      <button onClick={()=>stampBrk(i)} style={{...stampBtn(C),borderColor:WPC.breakBorder,color:WPC.breakColor}}>現在</button>
                     </div>
-                  ))}
+                  </div>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:600,color:WPC.breakColor,marginBottom:4}}>今回の休憩分数</div>
+                    <input type="number" min={0} step={5} value={durationMin}
+                      onChange={e=>updBrkDuration(i,e.target.value)}
+                      placeholder="分" style={{...inp,borderColor:WPC.breakBorder}}/>
+                  </div>
+                </div>
+                <div style={{fontSize:12,color:WPC.breakColor,fontWeight:500,marginTop:6}}>
+                  終了：{brk.out||"-"}（自動計算）
                 </div>
               </div>
-            ))}
-            <button onClick={addBrk} style={{width:"100%",padding:"8px",borderRadius:8,border:`1px dashed ${WPC.breakDash}`,background:WPC.breakBg,color:WPC.breakColor,fontSize:14,fontWeight:600,cursor:"pointer",marginBottom:16}}>＋ 休憩を追加</button>
+              );
+            })}
+            <button onClick={addBrk} style={{width:"100%",padding:"8px",borderRadius:8,border:`1px dashed ${WPC.breakDash}`,background:WPC.breakBg,color:WPC.breakColor,fontSize:14,fontWeight:600,cursor:"pointer",marginBottom:breakAllowanceMin>0?8:16}}>＋ 休憩を追加</button>
+
+            {breakAllowanceMin>0&&(
+              <div style={{marginBottom:16,padding:"8px 12px",borderRadius:8,
+                background:remainingBreakMin<0?"#fffbeb":WPC.breakBg,
+                border:`1px solid ${remainingBreakMin<0?"#fde68a":WPC.breakBorder}`,
+                fontSize:12,fontWeight:600,color:remainingBreakMin<0?"#92400e":WPC.breakColor}}>
+                {remainingBreakMin<0
+                  ? `⚠️ 休憩可能時間（${breakAllowanceMin}分）を${Math.abs(remainingBreakMin)}分超えています`
+                  : `☕ 残り休憩可能時間：${remainingBreakMin}分（合計${breakAllowanceMin}分中）`}
+              </div>
+            )}
 
             <div style={{marginBottom:16}}>
               <Lbl>メモ（任意）</Lbl>
@@ -1923,12 +1979,12 @@ function ShiftEditModal({dateInfo,wp,wpCfg,wpPatterns,wpColors,C,inp,onSave,onDe
 
         {/* 休憩 */}
         <div style={{background:"#f9fafb",borderRadius:10,padding:"12px",marginBottom:12}}>
-          <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:8}}>☕ 休憩時間</div>
+          <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:8}}>☕ 休憩可能時間（1日の合計）</div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
             <input type="number" min={0} max={120} step={5} value={breakMin}
               onChange={e=>setBreakMin(Number(e.target.value))}
               style={{...inp,width:80}} placeholder="0"/>
-            <span style={{fontSize:14,color:C.muted,fontWeight:500}}>分（0=休憩なし）</span>
+            <span style={{fontSize:14,color:C.muted,fontWeight:500}}>分（打刻入力側で使う1日あたりの休憩上限。0=休憩なし）</span>
           </div>
           {breakMin>0&&(
             <div style={{marginBottom:8}}>
@@ -2054,12 +2110,12 @@ function PatternEditModal({pattern,wpColors,C,inp,onSave,onDelete,onClose}){
         )}
 
         <div style={{background:"#f9fafb",borderRadius:10,padding:"12px",marginBottom:16}}>
-          <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:8}}>☕ 休憩時間</div>
+          <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:8}}>☕ 休憩可能時間（1日の合計）</div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
             <input type="number" min={0} max={120} step={5} value={breakMin}
               onChange={e=>setBreakMin(Number(e.target.value))}
               style={{...inp,width:80}}/>
-            <span style={{fontSize:14,color:C.muted}}>分（0=休憩なし）</span>
+            <span style={{fontSize:14,color:C.muted}}>分（打刻入力側で使う1日あたりの休憩上限。0=休憩なし）</span>
           </div>
           {breakMin>0&&(
             <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.muted}}>
