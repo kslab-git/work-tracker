@@ -38,6 +38,8 @@ const DEFAULT_WP = (id) => ({
   closingDay: 25,
   payDay: 10,
   payMonthOffset: 1, // 0=当月払い / 1=翌月払い
+  breakAlarmEnabled: false,   // 休憩前アラームON/OFF（デフォルトOFF）
+  breakAlarmMinutesBefore: 5, // 休憩開始の何分前に鳴らすか（デフォルト5分）
 });
 const DEFAULT_SETTINGS = {
   currency: "¥",
@@ -375,6 +377,72 @@ export default function WorkTracker() {
 
   const showToast=(msg,type="ok")=>{setToast({msg,type});setTimeout(()=>setToast({msg:"",type:"ok"}),2500);};
 
+  // ── 休憩前アラーム（Web Audio API）────────────────────────────────────────
+  // 外部音声ファイルは使わず、その場でオシレーターから「ピンポンパンポン」風の4音チャイムを生成する。
+  const audioCtxRef=useRef(null);
+  // 同じ日・同じ職場で1日に何度も鳴らさないための発火済み管理（キー："YYYY-MM-DD_A"等）
+  const alarmFiredRef=useRef(new Set());
+
+  const playAlarmChime=()=>{
+    try{
+      if(!audioCtxRef.current){
+        const AC=window.AudioContext||window.webkitAudioContext;
+        audioCtxRef.current=new AC();
+      }
+      const ctx=audioCtxRef.current;
+      if(ctx.state==="suspended") ctx.resume();
+      // ピン・ポン・パン・ポンの4音（周波数はチャイム風になるよう適当に選定）
+      const notes=[
+        {freq:880,start:0.00,dur:0.30},
+        {freq:660,start:0.35,dur:0.30},
+        {freq:740,start:0.70,dur:0.30},
+        {freq:550,start:1.05,dur:0.45},
+      ];
+      for(const n of notes){
+        const osc=ctx.createOscillator();
+        const gain=ctx.createGain();
+        osc.type="sine";
+        osc.frequency.value=n.freq;
+        const startTime=ctx.currentTime+n.start;
+        const endTime=startTime+n.dur;
+        gain.gain.setValueAtTime(0,startTime);
+        gain.gain.linearRampToValueAtTime(0.3,startTime+0.02);
+        gain.gain.linearRampToValueAtTime(0,endTime);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(startTime);
+        osc.stop(endTime+0.05);
+      }
+    }catch(e){
+      showToast("アラーム音の再生に失敗しました："+e.message,"err");
+    }
+  };
+
+  // 休憩開始時刻の指定分前になったら、開いている職場タブに関わらずアラームを鳴らす
+  // （アプリを開いている間のみ動作。30秒おきに現在時刻をチェックする）
+  useEffect(()=>{
+    const timer=setInterval(()=>{
+      const today=getTodayStr();
+      const now=new Date();
+      const nowMin=now.getHours()*60+now.getMinutes();
+      for(const wp of WPS){
+        const cfg=settings.workplaces[wp];
+        if(!cfg?.breakAlarmEnabled) continue;
+        const sh=shifts.find(s=>s.date===today&&s.wp===wp);
+        if(!sh?.breakStart) continue;
+        const minutesBefore=cfg.breakAlarmMinutesBefore??5;
+        const targetMin=toMin(sh.breakStart)-minutesBefore;
+        const key=`${today}_${wp}`;
+        if(nowMin===targetMin&&!alarmFiredRef.current.has(key)){
+          alarmFiredRef.current.add(key);
+          playAlarmChime();
+          showToast(`🔔 ${cfg.name}：あと${minutesBefore}分で休憩開始です`);
+        }
+      }
+    },30000);
+    return ()=>clearInterval(timer);
+  },[shifts,settings]);
+
   const activeCD=settings.workplaces[activeWP]?.closingDay??25;
   const periodRecords=useMemo(()=>
     records.filter(r=>isInPeriod(r.date,periodKey,activeCD))
@@ -440,6 +508,16 @@ export default function WorkTracker() {
 
   const currentRate=useMemo(()=>getRateForDate(form.date,settings.workplaces[form.wp||activeWP]?.rateHistory||[]),[form.date,form.wp,activeWP,settings]);
   const formWage=useMemo(()=>calcWage(form.segments,form.breaks,currentRate),[form.segments,form.breaks,currentRate]);
+
+  // 休憩時間超過チェック：その日のシフト予定に設定された休憩分数と、実際に入力した休憩時間を比較する
+  // （警告のみ・保存はブロックしない）
+  const breakOverWarning=useMemo(()=>{
+    const matchedShift=shifts.find(s=>s.date===form.date&&s.wp===(form.wp||activeWP));
+    if(!matchedShift||!matchedShift.breakMin) return null;
+    const actualBreakMin=formWage.totalBreakMin;
+    if(actualBreakMin<=matchedShift.breakMin) return null;
+    return `設定休憩（${matchedShift.breakMin}分）を超えています（${actualBreakMin}分）`;
+  },[shifts,form.date,form.wp,activeWP,formWage.totalBreakMin]);
 
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSave=()=>{
@@ -895,6 +973,12 @@ export default function WorkTracker() {
             ))}
             <button onClick={addBrk} style={{width:"100%",padding:"8px",borderRadius:8,border:`1px dashed ${WPC.breakDash}`,background:WPC.breakBg,color:WPC.breakColor,fontSize:14,fontWeight:600,cursor:"pointer",marginBottom:16}}>＋ 休憩を追加</button>
 
+            {breakOverWarning&&(
+              <div style={{marginTop:-8,marginBottom:16,padding:"8px 12px",borderRadius:8,background:"#fffbeb",border:"1px solid #fde68a",fontSize:12,fontWeight:600,color:"#92400e"}}>
+                ⚠️ {breakOverWarning}
+              </div>
+            )}
+
             <div style={{marginBottom:16}}>
               <Lbl>メモ（任意）</Lbl>
               <input type="text" value={form.memo} placeholder="業務内容など" onChange={e=>setForm(f=>({...f,memo:e.target.value}))} style={inp}/>
@@ -1127,6 +1211,31 @@ export default function WorkTracker() {
                       <option value={0}>月末</option>
                     </select>
                   </div>
+
+                  {/* 休憩前アラーム設定 */}
+                  <div style={{marginBottom:14,background:"#f9fafb",border:`1px solid ${C.border}`,borderRadius:10,padding:"12px"}}>
+                    <Lbl>🔔 休憩前アラーム</Lbl>
+                    <div style={{fontSize:12,color:C.muted,marginBottom:10,fontWeight:500}}>
+                      シフトに休憩開始時刻が設定されている日のみ、アプリを開いている間だけ音で通知します。※アプリを閉じている間・バックグラウンドでは鳴りません。
+                    </div>
+                    <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",marginBottom:cfg.breakAlarmEnabled?10:0}}>
+                      <span style={{fontSize:14,fontWeight:600,color:C.text}}>アラームを有効にする</span>
+                      <input type="checkbox" checked={cfg.breakAlarmEnabled??false} onChange={e=>updateWP("breakAlarmEnabled",e.target.checked)}
+                        style={{width:20,height:20,cursor:"pointer",accentColor:WP_COLORS[wp].primary}}/>
+                    </label>
+                    {cfg.breakAlarmEnabled&&(
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                        <span style={{fontSize:14,color:C.muted,fontWeight:500}}>何分前に鳴らす</span>
+                        <select value={cfg.breakAlarmMinutesBefore??5} onChange={e=>updateWP("breakAlarmMinutesBefore",Number(e.target.value))} style={{...inp,width:100,cursor:"pointer"}}>
+                          {[...Array(30)].map((_,i)=><option key={i+1} value={i+1}>{i+1}分前</option>)}
+                        </select>
+                      </div>
+                    )}
+                    <button onClick={playAlarmChime} style={{width:"100%",padding:"9px 0",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.muted,fontWeight:600,fontSize:13,cursor:"pointer"}}>
+                      🔊 アラーム音をテスト再生
+                    </button>
+                  </div>
+
                   <Lbl>💰 時給履歴（日単位）</Lbl>
                   <div style={{fontSize:12,color:C.muted,marginBottom:8,fontWeight:500}}>日付ごとに時給を設定。その日以降のレコードに自動適用されます。</div>
                   {[...(cfg.rateHistory||[])].sort((a,b)=>b.from.localeCompare(a.from)).map(r=>(
@@ -1737,6 +1846,8 @@ function ShiftEditModal({dateInfo,wp,wpCfg,wpPatterns,wpColors,C,inp,onSave,onDe
   const existing = dateInfo.existing;
   const [segments,setSegments]=useState(existing?.segments||[{in:"",out:""}]);
   const [breakMin,setBreakMin]=useState(existing?.breakMin||0);
+  // breakStart：休憩開始時刻。既存シフトデータに無い場合は空文字を初期値とする（後方互換）
+  const [breakStart,setBreakStart]=useState(existing?.breakStart||"");
   const [lateNightBreak,setLateNightBreak]=useState(existing?.lateNightBreak||false);
   const [memo,setMemo]=useState(existing?.memo||"");
   const [patternId,setPatternId]=useState(existing?.patternId||"");
@@ -1746,6 +1857,13 @@ function ShiftEditModal({dateInfo,wp,wpCfg,wpPatterns,wpColors,C,inp,onSave,onDe
   const d=new Date(dateInfo.date+"T00:00:00");
   const days=["日","月","火","水","木","金","土"];
   const dow=days[d.getDay()];
+
+  // 休憩終了時刻（表示のみ・編集不可）：休憩開始時刻＋休憩分数から自動計算
+  const breakEndTime=useMemo(()=>{
+    if(!breakStart||!breakMin) return "";
+    const endMin=(toMin(breakStart)+Number(breakMin))%(24*60);
+    return `${pad(Math.floor(endMin/60))}:${pad(endMin%60)}`;
+  },[breakStart,breakMin]);
 
   const applyPattern=(pat)=>{
     setSegments(pat.segments.map(s=>({...s})));
@@ -1771,7 +1889,7 @@ function ShiftEditModal({dateInfo,wp,wpCfg,wpPatterns,wpColors,C,inp,onSave,onDe
           <div style={{marginBottom:14}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
               <div style={{fontSize:13,fontWeight:600,color:C.muted}}>パターンから選択</div>
-              <button onClick={()=>onSave({date:dateInfo.date,wp,segments,breakMin,lateNightBreak,memo,patternId})}
+              <button onClick={()=>onSave({date:dateInfo.date,wp,segments,breakMin,breakStart,lateNightBreak,memo,patternId})}
                 style={{padding:"3px 12px",borderRadius:7,border:"none",background:wpColors.primary,color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer"}}>保存</button>
             </div>
             <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
@@ -1821,6 +1939,17 @@ function ShiftEditModal({dateInfo,wp,wpCfg,wpPatterns,wpColors,C,inp,onSave,onDe
             <span style={{fontSize:14,color:C.muted,fontWeight:500}}>分（0=休憩なし）</span>
           </div>
           {breakMin>0&&(
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:12,fontWeight:600,color:C.muted,marginBottom:4}}>休憩開始時刻（任意）</div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <input type="time" value={breakStart} onChange={e=>setBreakStart(e.target.value)} style={{...inp,flex:1}}/>
+                <span style={{fontSize:13,color:C.dim,fontWeight:500,whiteSpace:"nowrap"}}>
+                  終了：{breakEndTime||"-"}（自動計算）
+                </span>
+              </div>
+            </div>
+          )}
+          {breakMin>0&&(
             <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.muted}}>
               <input type="checkbox" checked={lateNightBreak} onChange={e=>setLateNightBreak(e.target.checked)}
                 style={{width:16,height:16,cursor:"pointer",accentColor:wpColors.primary}}/>
@@ -1859,7 +1988,7 @@ function ShiftEditModal({dateInfo,wp,wpCfg,wpPatterns,wpColors,C,inp,onSave,onDe
           </div>
         )}
 
-        <button onClick={()=>onSave({date:dateInfo.date,wp,segments,breakMin,lateNightBreak,memo,patternId})}
+        <button onClick={()=>onSave({date:dateInfo.date,wp,segments,breakMin,breakStart,lateNightBreak,memo,patternId})}
           style={{width:"100%",padding:"13px",borderRadius:10,border:"none",background:wpColors.primary,color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",marginBottom:8}}>
           シフトを保存
         </button>
