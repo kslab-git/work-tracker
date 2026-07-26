@@ -419,15 +419,17 @@ export default function WorkTracker() {
     }
   };
 
-  // 休憩開始時刻の指定分前になったら、開いている職場タブに関わらずアラームを鳴らす
+  // 休憩終了時刻の指定分前になったら、開いている職場タブに関わらずアラームを鳴らす
   // （アプリを開いている間のみ動作。15秒おきに現在時刻をチェックする）
   //
-  // 【不具合修正】旧実装は「nowMin===targetMin」という分単位の完全一致判定だった。
-  // 30秒間隔のチェックがその1分間のウィンドウ内で一度も走らないタイミングのずれが起きると
-  // （タブの一瞬の非アクティブ化やGCのポーズ等）、その分を過ぎた瞬間に二度と条件が
-  // 成立しなくなり、アラームが永久に鳴らなくなっていた。
-  // 「目標時刻に到達済み かつ 休憩開始時刻はまだ過ぎていない」という範囲判定に変更し、
-  // 一度でもチェックが走ればその回で追いついて発火できるようにした。
+  // 【v18で変更】シフト予定のbreakStartではなく、打刻入力画面で記録・保存した
+  // 「実際の休憩」（records側のbreaks配列、各{in,out}）の終了時刻(out)を基準にする。
+  // 1日に複数の休憩が記録されている場合はそれぞれ独立して判定する
+  // （キーに休憩のインデックスを含め、休憩ごとに1回だけ発火）。
+  //
+  // 判定は「目標時刻に到達済み かつ 休憩終了時刻はまだ過ぎていない」という範囲判定。
+  // 分単位の完全一致判定だと、チェック間隔のタイミングのずれで永久に発火しなくなる
+  // 不具合があったため、この範囲判定＋追いつき方式にしている。
   useEffect(()=>{
     const timer=setInterval(()=>{
       const today=getTodayStr();
@@ -437,21 +439,24 @@ export default function WorkTracker() {
       for(const wp of WPS){
         const cfg=settings.workplaces[wp];
         if(!cfg?.breakAlarmEnabled) continue;
-        const sh=shifts.find(s=>s.date===today&&s.wp===wp);
-        if(!sh?.breakStart) continue;
+        const rec=records.find(r=>r.date===today);
+        const brks=rec?.[wp]?.breaks||[];
         const minutesBefore=cfg.breakAlarmMinutesBefore??5;
-        const breakStartMin=toMin(sh.breakStart);
-        const targetMin=breakStartMin-minutesBefore;
-        const key=`${today}_${wp}`;
-        if(nowMin>=targetMin&&nowMin<breakStartMin&&!alarmFiredRef.current.has(key)){
-          alarmFiredRef.current.add(key);
-          playAlarmChime();
-          showToast(`🔔 ${cfg.name}：あと${minutesBefore}分で休憩開始です`);
-        }
+        brks.forEach((b,idx)=>{
+          if(!b.in||!b.out) return;
+          const endMin=toMin(b.out);
+          const targetMin=endMin-minutesBefore;
+          const key=`${today}_${wp}_${idx}`;
+          if(nowMin>=targetMin&&nowMin<endMin&&!alarmFiredRef.current.has(key)){
+            alarmFiredRef.current.add(key);
+            playAlarmChime();
+            showToast(`🔔 ${cfg.name}：あと${minutesBefore}分で休憩終了です`);
+          }
+        });
       }
     },15000);
     return ()=>clearInterval(timer);
-  },[shifts,settings]);
+  },[records,settings]);
 
   const activeCD=settings.workplaces[activeWP]?.closingDay??25;
   const periodRecords=useMemo(()=>
@@ -892,21 +897,24 @@ export default function WorkTracker() {
           {WPS.map(wp=>{
             const cfg=settings.workplaces[wp];
             const today=getTodayStr();
-            const sh=shifts.find(s=>s.date===today&&s.wp===wp);
+            const rec=records.find(r=>r.date===today);
+            const brks=rec?.[wp]?.breaks||[];
             const minutesBefore=cfg?.breakAlarmMinutesBefore??5;
-            const key=`${today}_${wp}`;
-            let targetLabel="（本日のシフトに休憩開始時刻が未設定）";
-            if(sh?.breakStart){
-              const breakStartMin=toMin(sh.breakStart);
-              const targetMin=((breakStartMin-minutesBefore)%1440+1440)%1440;
-              targetLabel=`${pad(Math.floor(targetMin/60))}:${pad(targetMin%60)}（休憩開始${sh.breakStart}の${minutesBefore}分前）`;
-            }
+            const validBrks=brks.filter(b=>b.in&&b.out);
             return(
               <div key={wp} style={{marginTop:4,paddingTop:4,borderTop:"1px solid #374151"}}>
-                <div>[{wp}] ON/OFF：{String(cfg?.breakAlarmEnabled??false)}／何分前：{minutesBefore}分</div>
-                <div>[{wp}] 本日のbreakStart：{sh?.breakStart||"（本日のシフトが無い、または休憩開始時刻が未入力）"}</div>
-                <div>[{wp}] 次のアラーム予定：{targetLabel}</div>
-                <div>[{wp}] 本日の発火状況：{alarmFiredRef.current.has(key)?"発火済み":"未発火"}</div>
+                <div>[{wp}] ON/OFF：{String(cfg?.breakAlarmEnabled??false)}／何分前：{minutesBefore}分（休憩終了基準）</div>
+                {validBrks.length===0&&<div>[{wp}] 本日の記録済み休憩：（まだ休憩が記録・保存されていません）</div>}
+                {validBrks.map((b,idx)=>{
+                  const endMin=toMin(b.out);
+                  const targetMin=((endMin-minutesBefore)%1440+1440)%1440;
+                  const key=`${today}_${wp}_${brks.indexOf(b)}`;
+                  return(
+                    <div key={idx}>
+                      [{wp}] 休憩{idx+1}：{b.in}〜{b.out}／次のアラーム予定：{pad(Math.floor(targetMin/60))}:{pad(targetMin%60)}／発火状況：{alarmFiredRef.current.has(key)?"発火済み":"未発火"}
+                    </div>
+                  );
+                })}
               </div>
             );
           })}
@@ -1294,7 +1302,7 @@ export default function WorkTracker() {
                   <div style={{marginBottom:14,background:"#f9fafb",border:`1px solid ${C.border}`,borderRadius:10,padding:"12px"}}>
                     <Lbl>🔔 休憩前アラーム</Lbl>
                     <div style={{fontSize:12,color:C.muted,marginBottom:10,fontWeight:500}}>
-                      シフトに休憩開始時刻が設定されている日のみ、アプリを開いている間だけ音で通知します。※アプリを閉じている間・バックグラウンドでは鳴りません。
+                      打刻入力画面で記録・保存した休憩の「終了時刻」の指定分前に、アプリを開いている間だけ音で通知します。休憩を記録・保存していない日は鳴りません。※アプリを閉じている間・バックグラウンドでは鳴りません。
                     </div>
                     <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",marginBottom:cfg.breakAlarmEnabled?10:0}}>
                       <span style={{fontSize:14,fontWeight:600,color:C.text}}>アラームを有効にする</span>
@@ -1303,7 +1311,7 @@ export default function WorkTracker() {
                     </label>
                     {cfg.breakAlarmEnabled&&(
                       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                        <span style={{fontSize:14,color:C.muted,fontWeight:500}}>何分前に鳴らす</span>
+                        <span style={{fontSize:14,color:C.muted,fontWeight:500}}>休憩終了の何分前に鳴らす</span>
                         <select value={cfg.breakAlarmMinutesBefore??5} onChange={e=>updateWP("breakAlarmMinutesBefore",Number(e.target.value))} style={{...inp,width:100,cursor:"pointer"}}>
                           {[...Array(30)].map((_,i)=><option key={i+1} value={i+1}>{i+1}分前</option>)}
                         </select>
