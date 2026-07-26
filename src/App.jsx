@@ -1041,13 +1041,22 @@ export default function WorkTracker() {
                   </div>
                   <div>
                     <div style={{fontSize:12,fontWeight:600,color:WPC.breakColor,marginBottom:4}}>今回の休憩分数</div>
-                    <input type="number" min={0} step={5} value={durationMin}
+                    <select value={brk.in?(durationMin===""?0:durationMin):0}
                       onChange={e=>updBrkDuration(i,e.target.value)}
-                      placeholder="分" style={{...inp,borderColor:WPC.breakBorder}}/>
+                      disabled={!brk.in}
+                      style={{...inp,borderColor:WPC.breakBorder,cursor:brk.in?"pointer":"not-allowed"}}>
+                      {[...Array(19)].map((_,idx)=>{
+                        const m=idx*5;
+                        return <option key={m} value={m}>{m}分</option>;
+                      })}
+                    </select>
                   </div>
                 </div>
-                <div style={{fontSize:12,color:WPC.breakColor,fontWeight:500,marginTop:6}}>
-                  終了：{brk.out||"-"}（自動計算）
+                <div style={{marginTop:8}}>
+                  <div style={{fontSize:12,fontWeight:600,color:WPC.breakColor,marginBottom:4}}>休憩終了（自動計算）</div>
+                  <div style={{...inp,display:"flex",alignItems:"center",background:"#fff",fontWeight:700,borderColor:WPC.breakBorder,color:WPC.breakColor}}>
+                    {brk.out||"-"}
+                  </div>
                 </div>
               </div>
               );
