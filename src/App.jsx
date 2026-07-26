@@ -554,7 +554,12 @@ export default function WorkTracker() {
 
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSave=()=>{
-    if(!form.segments.some(s=>s.in||s.out)) return;
+    // 現場では「出勤→休憩を記録→後から退勤」のように別々のタイミングで保存することがあるため、
+    // 出退勤区間・休憩のどちらか一方でも入力されていれば保存できるようにする
+    // （退勤時刻が空でも、出勤または休憩の入力があれば保存を許可する）。
+    const hasSegmentInput=form.segments.some(s=>s.in||s.out);
+    const hasBreakInput=form.breaks.some(b=>b.in||b.out);
+    if(!hasSegmentInput&&!hasBreakInput) return;
     const brkWarns=form.breaks.map((b,i)=>(!b.in&&b.out)?`休憩${i+1}：開始時間が未入力です`:null).filter(Boolean);
     if(brkWarns.length>0){setWarnings(brkWarns);setTimeout(()=>setWarnings([]),4000);return;}
 
