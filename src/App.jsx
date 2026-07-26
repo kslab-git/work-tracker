@@ -547,10 +547,26 @@ export default function WorkTracker() {
   const currentRate=useMemo(()=>getRateForDate(form.date,settings.workplaces[form.wp||activeWP]?.rateHistory||[]),[form.date,form.wp,activeWP,settings]);
   const formWage=useMemo(()=>calcWage(form.segments,form.breaks,currentRate),[form.segments,form.breaks,currentRate]);
 
-  // その日・その職場のシフト予定にある「1日の合計休憩可能時間」と、実際の入力合計を比較する
+  // その日・その職場のシフト予定にある「1日の合計休憩可能時間」と、実際の合計休憩時間を比較する。
+  // 【不具合修正】以前はform.breaks（入力中の休憩）だけを見ており、保存済みレコード（records）の
+  // 休憩を合算していなかったため、保存後に画面を開き直すと残り時間が未使用状態に戻って見えていた。
+  // 編集モード（form.idあり）はform.breaksがその日の休憩を丸ごと表しているため合算不要。
+  // 新規入力モード（form.idなし）は保存時に「保存済み＋今回入力中」を合算するマージ処理と一致させる。
   const matchedShiftForBreak=useMemo(()=>shifts.find(s=>s.date===form.date&&s.wp===(form.wp||activeWP)),[shifts,form.date,form.wp,activeWP]);
   const breakAllowanceMin=matchedShiftForBreak?.breakMin||0;
-  const remainingBreakMin=breakAllowanceMin-formWage.totalBreakMin;
+  const savedBreaksForDay=useMemo(()=>{
+    if(form.id) return [];
+    const rec=records.find(r=>r.date===form.date);
+    return rec?.[form.wp||activeWP]?.breaks||[];
+  },[records,form.date,form.wp,activeWP,form.id]);
+  const savedBreakMinForDay=useMemo(()=>savedBreaksForDay.reduce((sum,b)=>{
+    if(!b.in||!b.out) return sum;
+    let d=toMin(b.out)-toMin(b.in);
+    if(d<0) d+=24*60;
+    return sum+d;
+  },0),[savedBreaksForDay]);
+  const totalBreakMinForDay=savedBreakMinForDay+formWage.totalBreakMin;
+  const remainingBreakMin=breakAllowanceMin-totalBreakMinForDay;
 
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSave=()=>{
@@ -563,9 +579,9 @@ export default function WorkTracker() {
     const brkWarns=form.breaks.map((b,i)=>(!b.in&&b.out)?`休憩${i+1}：開始時間が未入力です`:null).filter(Boolean);
     if(brkWarns.length>0){setWarnings(brkWarns);setTimeout(()=>setWarnings([]),4000);return;}
 
-    // 休憩可能時間（シフト予定のbreakMin）を超える入力は保存をブロックする
-    if(matchedShiftForBreak&&breakAllowanceMin>0&&formWage.totalBreakMin>breakAllowanceMin){
-      setWarnings([`休憩時間の合計（${formWage.totalBreakMin}分）が休憩可能時間（${breakAllowanceMin}分）を超えています`]);
+    // 休憩可能時間（シフト予定のbreakMin）を超える入力は保存をブロックする（保存済み分も合算して判定）
+    if(matchedShiftForBreak&&breakAllowanceMin>0&&totalBreakMinForDay>breakAllowanceMin){
+      setWarnings([`休憩時間の合計（${totalBreakMinForDay}分）が休憩可能時間（${breakAllowanceMin}分）を超えています`]);
       setTimeout(()=>setWarnings([]),4000);
       return;
     }
