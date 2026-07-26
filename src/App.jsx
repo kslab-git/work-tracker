@@ -1261,6 +1261,14 @@ export default function WorkTracker() {
             {WPS.map(wp=>{
               const cfg=settingsForm.workplaces?.[wp]||DEFAULT_WP(wp);
               const updateWP=(field,val)=>setSettingsForm(s=>({...s,workplaces:{...s.workplaces,[wp]:{...cfg,[field]:val}}}));
+              // アラーム設定（ON/OFF・何分前）だけは「設定を保存」を待たずに即反映する。
+              // settingsForm（下書き）とsettings（実際にアラーム判定・IndexedDB保存に使われる確定値）の
+              // 両方を同時に更新することで、押し忘れによる「ONにしたのに鳴らない」混乱を防ぐ。
+              // 他の設定項目（時給・締め日等）は従来通りsettingsFormのみ更新し、保存ボタンで確定する。
+              const updateAlarmSetting=(field,val)=>{
+                setSettingsForm(s=>({...s,workplaces:{...s.workplaces,[wp]:{...(s.workplaces?.[wp]||DEFAULT_WP(wp)),[field]:val}}}));
+                setSettings(s=>({...s,workplaces:{...s.workplaces,[wp]:{...(s.workplaces?.[wp]||DEFAULT_WP(wp)),[field]:val}}}));
+              };
               return(
                 <div key={wp} style={{borderTop:`1px solid ${C.border}`,paddingTop:16,marginBottom:16}}>
                   <div style={{fontSize:15,fontWeight:800,color:C.text,marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
@@ -1301,15 +1309,18 @@ export default function WorkTracker() {
                     <div style={{fontSize:12,color:C.muted,marginBottom:10,fontWeight:500}}>
                       打刻入力画面で記録・保存した休憩の「終了時刻」の指定分前に、アプリを開いている間だけ音で通知します。休憩を記録・保存していない日は鳴りません。※アプリを閉じている間・バックグラウンドでは鳴りません。
                     </div>
+                    <div style={{fontSize:11,color:"#15803d",marginBottom:10,fontWeight:600}}>
+                      ✓ このON/OFF・何分前設定は「設定を保存」を押さなくても変更した瞬間に反映されます
+                    </div>
                     <label style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",marginBottom:cfg.breakAlarmEnabled?10:0}}>
                       <span style={{fontSize:14,fontWeight:600,color:C.text}}>アラームを有効にする</span>
-                      <input type="checkbox" checked={cfg.breakAlarmEnabled??false} onChange={e=>updateWP("breakAlarmEnabled",e.target.checked)}
+                      <input type="checkbox" checked={cfg.breakAlarmEnabled??false} onChange={e=>updateAlarmSetting("breakAlarmEnabled",e.target.checked)}
                         style={{width:20,height:20,cursor:"pointer",accentColor:WP_COLORS[wp].primary}}/>
                     </label>
                     {cfg.breakAlarmEnabled&&(
                       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
                         <span style={{fontSize:14,color:C.muted,fontWeight:500}}>休憩終了の何分前に鳴らす</span>
-                        <select value={cfg.breakAlarmMinutesBefore??5} onChange={e=>updateWP("breakAlarmMinutesBefore",Number(e.target.value))} style={{...inp,width:100,cursor:"pointer"}}>
+                        <select value={cfg.breakAlarmMinutesBefore??5} onChange={e=>updateAlarmSetting("breakAlarmMinutesBefore",Number(e.target.value))} style={{...inp,width:100,cursor:"pointer"}}>
                           {[...Array(30)].map((_,i)=><option key={i+1} value={i+1}>{i+1}分前</option>)}
                         </select>
                       </div>
