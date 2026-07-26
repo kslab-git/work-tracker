@@ -1264,7 +1264,7 @@ export default function WorkTracker() {
 
         {/* ── SETTINGS ────────────────────────────────────────────────────── */}
         {view==="settings"&&(
-          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px 100px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
             <div style={{marginBottom:16}}>
               <Lbl>通貨記号</Lbl>
               <input type="text" value={settingsForm.currency||"¥"} maxLength={3} onChange={e=>setSettingsForm(s=>({...s,currency:e.target.value}))} style={{...inp,width:80}}/>
@@ -1348,9 +1348,7 @@ export default function WorkTracker() {
               );
             })}
 
-            <button onClick={handleSettingsSave} style={{width:"100%",padding:"13px 0",borderRadius:10,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:15,cursor:"pointer",marginBottom:20}}>設定を保存</button>
-
-            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16}}>
+            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16,marginTop:4}}>
               <Lbl>📥 データ管理</Lbl>
               {oldLocalStorageRecords.length>0&&(
                 <div style={{marginBottom:12}}>
@@ -1415,6 +1413,15 @@ export default function WorkTracker() {
               </button>
               <input ref={importRef} type="file" accept=".csv" onChange={handleImport} style={{display:"none"}}/>
             </div>
+          </div>
+        )}
+
+        {/* 設定画面専用フローティング保存ボタン（打刻入力画面の保存ボタンと同じ挙動・見た目） */}
+        {view==="settings"&&(
+          <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:500,padding:"12px 16px",background:"rgba(255,255,255,0.95)",backdropFilter:"blur(8px)",borderTop:`1px solid ${C.border}`,boxSizing:"border-box",zIndex:100}}>
+            <button onClick={handleSettingsSave} style={{width:"100%",padding:"14px 0",borderRadius:10,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:16,cursor:"pointer",boxShadow:`0 4px 16px ${WPC.shadow}`}}>
+              ✓ 設定を保存
+            </button>
           </div>
         )}
 
