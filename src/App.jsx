@@ -172,6 +172,41 @@ function downloadCSV(records, settings, label="勤怠記録") {
   URL.revokeObjectURL(url);
 }
 
+// ─── 全データバックアップ（JSON） ─────────────────────────────────────────────
+// CSV出力は打刻データ(records)のみが対象でシフト・設定・パターンが含まれないため、
+// 機種変更・端末バックアップ用にIndexedDBの4ストア全てを1つのJSONにまとめて
+// 出力・復元できるようにする。Google Drive等への保存はユーザーが手動で行う
+// 運用とし、新たな認証連携（Google Drive API等）は追加しない。
+function downloadFullBackup(records, shifts, patterns, settings) {
+  const backup = {
+    app: "kslab_work_tracker",
+    backupVersion: 1,
+    exportedAt: new Date().toISOString(),
+    records,
+    shifts,
+    patterns,
+    settings,
+  };
+  const json = JSON.stringify(backup, null, 2);
+  const blob = new Blob([json], { type: "application/json;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `work_tracker_backup_${getTodayStr()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// バックアップJSONの構造を検証する（壊れたファイルで中途半端に上書きしないため）
+function validateFullBackup(data) {
+  if (!data || typeof data !== "object") return "ファイルの形式が正しくありません";
+  if (!Array.isArray(data.records)) return "打刻データ(records)が見つかりません";
+  if (!Array.isArray(data.shifts)) return "シフトデータ(shifts)が見つかりません";
+  if (!data.patterns || typeof data.patterns !== "object") return "パターンデータ(patterns)が見つかりません";
+  if (!data.settings || typeof data.settings !== "object" || !data.settings.workplaces) return "設定データ(settings)が見つかりません";
+  return null; // 問題なし
+}
+
 
 // ─── シフト見込み給与計算 ────────────────────────────────────────────────────
 function calcShiftPay(segments, breakMin, lateNightBreak, rate) {
@@ -306,6 +341,8 @@ export default function WorkTracker() {
   const pendingActionRef=useRef(null);
   const [settingsForm,setSettingsForm]=useState(()=>JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
   const importRef=useRef();
+  const fullRestoreRef=useRef(); // 全データ復元（JSON）用のfile input ref
+  const [restoreConfirm,setRestoreConfirm]=useState(null); // 復元前確認モーダルに渡すパース済みデータ
 
   const emptyForm=()=>({id:null,date:getTodayStr(),wp:activeWP,segments:[{in:"",out:""}],breaks:[],memo:""});
   const [form,setForm]=useState(emptyForm());
@@ -764,6 +801,67 @@ export default function WorkTracker() {
     e.target.value="";
   };
 
+  // ── 全データバックアップ（JSON）：出力 ──────────────────────────────────────
+  const handleFullBackup=()=>{
+    downloadFullBackup(records,shifts,patterns,settings);
+    showToast("全データをバックアップしました");
+  };
+
+  // ── 全データ復元（JSON）：ファイル選択時、まずパースと検証だけ行い、
+  // 実際の上書きは確認モーダルで「復元する」を押してから実行する ──────────────
+  const handleFullRestoreFile=(e)=>{
+    const file=e.target.files[0];
+    if(!file) return;
+    const reader=new FileReader();
+    reader.onload=(ev)=>{
+      let data;
+      try{
+        data=JSON.parse(ev.target.result);
+      }catch{
+        showToast("JSONファイルを読み込めませんでした（形式が不正です）","err");
+        e.target.value="";
+        return;
+      }
+      const errMsg=validateFullBackup(data);
+      if(errMsg){
+        showToast(`復元できません：${errMsg}`,"err");
+        e.target.value="";
+        return;
+      }
+      setRestoreConfirm(data);
+      e.target.value="";
+    };
+    reader.readAsText(file,"UTF-8");
+  };
+
+  // 確認モーダルで「復元する」が押されたときに実際にIndexedDBへ反映する
+  const executeFullRestore=()=>{
+    if(!restoreConfirm) return;
+    try{
+      const data=restoreConfirm;
+      const normalizedPatterns={
+        A:Array.isArray(data.patterns?.A)?data.patterns.A:[],
+        B:Array.isArray(data.patterns?.B)?data.patterns.B:[],
+      };
+      const normalizedSettings={...DEFAULT_SETTINGS,...data.settings};
+      if(!normalizedSettings.workplaces.A) normalizedSettings.workplaces.A=DEFAULT_WP("A");
+      if(!normalizedSettings.workplaces.B) normalizedSettings.workplaces.B=DEFAULT_WP("B");
+
+      setRecords(data.records);
+      setShifts(data.shifts);
+      setPatterns(normalizedPatterns);
+      setSettings(normalizedSettings);
+      setSettingsForm(JSON.parse(JSON.stringify(normalizedSettings)));
+      setRestoreConfirm(null);
+      showToast("バックアップから復元しました。画面を再読み込みします…");
+      // IndexedDBへの書き込み（useEffect）が確実に完了してからリロードする
+      setTimeout(()=>window.location.reload(),1200);
+    }catch(err){
+      showToast("復元処理に失敗しました："+err.message,"err");
+      setRestoreConfirm(null);
+    }
+  };
+
   // 職場切り替え時にフォームをリセット
   const switchWP=(wp)=>{
     setActiveWP(wp);
@@ -822,6 +920,31 @@ export default function WorkTracker() {
     <div style={{minHeight:"100vh",background:C.bg,color:C.text,
       fontFamily:"'Noto Sans JP','Hiragino Kaku Gothic ProN',sans-serif",
       display:"flex",flexDirection:"column",alignItems:"center",paddingBottom:60}}>
+
+      {/* 全データ復元 確認モーダル */}
+      {restoreConfirm&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:500,padding:20}}>
+          <div style={{background:"#fff",borderRadius:16,width:"100%",maxWidth:420,padding:"24px 20px"}}>
+            <div style={{fontSize:18,fontWeight:800,marginBottom:8,color:C.red}}>⚠️ 現在のデータを上書きします</div>
+            <div style={{fontSize:13,color:C.muted,lineHeight:1.8,marginBottom:16}}>
+              選択したバックアップファイルで、この端末の打刻データ・シフト・パターン・設定をすべて置き換えます。<br/>
+              <b>この操作は元に戻せません。</b>心配な場合は先に「全データバックアップ」で現在のデータを保存してください。
+            </div>
+            <div style={{background:"#f9fafb",borderRadius:8,padding:"10px 12px",fontSize:12,color:C.muted,marginBottom:18}}>
+              バックアップ日時：{restoreConfirm.exportedAt?new Date(restoreConfirm.exportedAt).toLocaleString("ja-JP"):"不明"}<br/>
+              打刻データ：{restoreConfirm.records?.length??0}件／シフト：{restoreConfirm.shifts?.length??0}件
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>setRestoreConfirm(null)} style={{flex:1,padding:"12px 0",borderRadius:10,border:`1px solid ${C.border}`,background:"none",color:C.muted,fontWeight:600,fontSize:14,cursor:"pointer"}}>
+                キャンセル
+              </button>
+              <button onClick={executeFullRestore} style={{flex:1,padding:"12px 0",borderRadius:10,border:"none",background:C.red,color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+                上書きして復元する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* iOS Safari CSV ガイドモーダル */}
       {iosGuide&&(
@@ -1407,10 +1530,26 @@ export default function WorkTracker() {
               <button onClick={()=>{pendingActionRef.current=()=>downloadCSV(records,settings,"勤怠_全データバックアップ");setIosGuide("export");}} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:14,cursor:"pointer",marginBottom:8}}>
                 📥 全データをCSVバックアップ
               </button>
-              <button onClick={()=>setIosGuide("import")} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.blue,fontWeight:700,fontSize:14,cursor:"pointer"}}>
+              <button onClick={()=>setIosGuide("import")} style={{width:"100%",padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.blue,fontWeight:700,fontSize:14,cursor:"pointer",marginBottom:16}}>
                 📂 CSVから取込（修正データ）
               </button>
               <input ref={importRef} type="file" accept=".csv" onChange={handleImport} style={{display:"none"}}/>
+
+              {/* ── 全データバックアップ／復元（JSON）：機種変更・端末移行向け ── */}
+              <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16}}>
+                <Lbl>📦 全データバックアップ（機種変更・端末移行用）</Lbl>
+                <div style={{fontSize:12,color:C.muted,marginBottom:10,fontWeight:500,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:"10px"}}>
+                  打刻データ・シフト・パターン・設定（職場名・時給・アラーム設定等）を<b>すべて</b>1つのファイルにまとめて保存・復元します。<br/>
+                  出力したファイルをGoogleドライブ等に保存しておき、新しい端末でこの画面から復元してください。新たなアカウント連携は不要です。
+                </div>
+                <button onClick={handleFullBackup} style={{width:"100%",padding:"11px 0",borderRadius:10,border:"none",background:WPC.primary,color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer",marginBottom:8}}>
+                  📦 全データをバックアップ（JSON）
+                </button>
+                <button onClick={()=>fullRestoreRef.current.click()} style={{width:"100%",padding:"11px 0",borderRadius:10,border:"1px solid #fecaca",background:"#fff5f5",color:"#dc2626",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+                  📦 バックアップから全データを復元
+                </button>
+                <input ref={fullRestoreRef} type="file" accept="application/json,.json" onChange={handleFullRestoreFile} style={{display:"none"}}/>
+              </div>
             </div>
           </div>
         )}
@@ -1444,7 +1583,7 @@ export default function WorkTracker() {
 
         {/* ── HELP ────────────────────────────────────────────────────────── */}
         {view==="help"&&(
-          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,padding:"18px 16px",boxShadow:"0 1px 4px rgba(0,0,0,0.05)",borderRadius:14}}>
             <HelpSection title="📱 基本の使い方" C={C} wpc={WPC}>
               {[
                 {n:"1",h:"出勤時：職場を選んで「今」ボタン",p:"上部の職場ボタンで職場A/Bを切り替え、出勤欄の「今」をタップ。"},
@@ -1475,6 +1614,16 @@ export default function WorkTracker() {
                 <div>③ 履歴タブ → 「📂取込」で再インポート</div>
                 <div style={{marginTop:8,padding:"8px",background:"#fffbeb",borderRadius:6,border:"1px solid #fde68a",color:"#92400e",fontWeight:500}}>
                   ⚠️ インポート時は日付が一致するレコードが上書きされます
+                </div>
+              </div>
+            </HelpSection>
+            <HelpSection title="📦 機種変更・端末移行" C={C} wpc={WPC}>
+              <div style={{fontSize:13,color:C.muted,lineHeight:1.9}}>
+                <div>① 設定タブ → 「📦 全データをバックアップ（JSON）」</div>
+                <div>② 出力されたファイルをGoogleドライブ等に保存</div>
+                <div>③ 新しい端末でこのアプリを開き、設定タブ → 「📦 バックアップから全データを復元」</div>
+                <div style={{marginTop:8,padding:"8px",background:"#fffbeb",borderRadius:6,border:"1px solid #fde68a",color:"#92400e",fontWeight:500}}>
+                  ⚠️ 復元すると現在の端末のデータは上書きされます
                 </div>
               </div>
             </HelpSection>
