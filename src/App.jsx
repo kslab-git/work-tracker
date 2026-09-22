@@ -316,6 +316,88 @@ function dbPutSetting(db, key, value) {
   });
 }
 
+// ─── Google Drive 同期 ─────────────────────────────────────────────────────────
+// v19で追加。データはユーザー自身のGoogle Driveの「アプリ専用の隠しフォルダ」
+// （drive.appdataスコープ）にのみ保存する。KSLABのサーバーは一切経由しない。
+// 同期方式：ファイル全体タイムスタンプ比較方式（レコード単位マージではない）。
+//   ローカルとDrive、それぞれの「最終更新時刻」を比較し、新しい方を丸ごと採用する。
+//   複数端末でほぼ同時に別々の編集をした場合、古い方の編集は失われる可能性がある
+//   （軽量な個人・少人数利用を想定した割り切った設計。詳細は引き継ぎ書参照）。
+const GOOGLE_CLIENT_ID = "939349183654-irvm08n6t0keo2uue2rnlc9t2nv8768d.apps.googleusercontent.com";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/userinfo.email";
+const DRIVE_SYNC_FILENAME = "work_tracker_sync.json";
+const DRIVE_CONNECTED_KEY = "drive_connected"; // settingsストアに保存。前回ログイン済みかの目印（トークン自体は保存しない）
+
+// Google Identity Services（GIS）のスクリプトを動的に読み込む（1回だけ）
+let gisScriptPromise = null;
+function loadGisScript() {
+  if (gisScriptPromise) return gisScriptPromise;
+  gisScriptPromise = new Promise((resolve, reject) => {
+    if (window.google?.accounts?.oauth2) { resolve(); return; }
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Google Identity Servicesの読み込みに失敗しました"));
+    document.head.appendChild(script);
+  });
+  return gisScriptPromise;
+}
+
+// Drive APIのappDataFolder内から同期ファイルのfileIdを探す（無ければnull）
+async function driveFindSyncFileId(accessToken) {
+  const url = "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&fields=files(id,name,modifiedTime)&q=" +
+    encodeURIComponent(`name='${DRIVE_SYNC_FILENAME}'`);
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) throw new Error(`Drive検索エラー：${res.status}`);
+  const data = await res.json();
+  return data.files && data.files.length > 0 ? data.files[0].id : null;
+}
+
+// 同期ファイルの中身（JSON）をダウンロードする。fileIdが無ければnullを返す
+async function driveDownloadSyncFile(accessToken, fileId) {
+  if (!fileId) return null;
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`Driveダウンロードエラー：${res.status}`);
+  return res.json();
+}
+
+// 同期ファイルをアップロードする（新規作成 or 上書き更新）
+async function driveUploadSyncFile(accessToken, fileId, payload) {
+  const boundary = "wt_sync_boundary";
+  const metadata = fileId
+    ? { name: DRIVE_SYNC_FILENAME }
+    : { name: DRIVE_SYNC_FILENAME, parents: ["appDataFolder"] };
+  const body =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(payload)}\r\n` +
+    `--${boundary}--`;
+  const url = fileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
+    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+  const res = await fetch(url, {
+    method: fileId ? "PATCH" : "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+    body,
+  });
+  if (!res.ok) throw new Error(`Driveアップロードエラー：${res.status}`);
+  return res.json();
+}
+
+// アクセストークンでユーザーのメールアドレスを取得（表示用。失敗しても同期自体には影響しない）
+async function driveFetchUserEmail(accessToken) {
+  try {
+    const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.email || null;
+  } catch { return null; }
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function WorkTracker() {
   const dbRef=useRef(null);
@@ -343,6 +425,18 @@ export default function WorkTracker() {
   const importRef=useRef();
   const fullRestoreRef=useRef(); // 全データ復元（JSON）用のfile input ref
   const [restoreConfirm,setRestoreConfirm]=useState(null); // 復元前確認モーダルに渡すパース済みデータ
+
+  // ── Google Drive 同期用 state ────────────────────────────────────────────────
+  const driveTokenRef=useRef(null); // アクセストークン本体はReact stateに置かず、refにのみ保持（画面再描画・DevTools露出を避ける）
+  const driveTokenClientRef=useRef(null); // GISのtoken client（再利用のため保持）
+  const [driveSignedIn,setDriveSignedIn]=useState(false);
+  const [driveEmail,setDriveEmail]=useState(null);
+  const [driveSyncStatus,setDriveSyncStatus]=useState("idle"); // idle | syncing | synced | error
+  const [driveSyncError,setDriveSyncError]=useState("");
+  const [lastSyncedAt,setLastSyncedAt]=useState(null);
+  const driveSyncTimerRef=useRef(null); // 自動同期のデバウンス用タイマー
+  const driveInitAttemptedRef=useRef(false); // 起動時のサイレント再ログインを1回だけ試みるためのフラグ
+  const [driveDirtyTick,setDriveDirtyTick]=useState(0); // records/shifts/patterns/settingsの変更のたびに増分し、自動同期のトリガーにする
 
   const emptyForm=()=>({id:null,date:getTodayStr(),wp:activeWP,segments:[{in:"",out:""}],breaks:[],memo:""});
   const [form,setForm]=useState(emptyForm());
@@ -412,7 +506,156 @@ export default function WorkTracker() {
   },[patterns,dbReady]);
   useEffect(()=>{if(dbReady&&dbRef.current) dbPutSetting(dbRef.current,"period",periodKey);},[periodKey,dbReady]);
 
+  // データ本体（records/shifts/patterns/settings）が変わるたびに「最終更新時刻」を記録し、
+  // Drive同期のトリガー（driveDirtyTick）を進める。periodKeyやUIの表示状態は対象外
+  // （同期すべき「データ」ではないため）。
+  useEffect(()=>{
+    if(!dbReady||!dbRef.current) return;
+    dbPutSetting(dbRef.current,"local_updated_at",Date.now());
+    setDriveDirtyTick(t=>t+1);
+  },[records,shifts,patterns,settings,dbReady]);
+
   const showToast=(msg,type="ok")=>{setToast({msg,type});setTimeout(()=>setToast({msg:"",type:"ok"}),2500);};
+
+  // ── Google Drive 同期：本体処理 ─────────────────────────────────────────────
+  // ファイル全体タイムスタンプ比較方式：ローカルの最終更新時刻とDrive上のexportedAtを比較し、
+  // 新しい方を丸ごと採用する（レコード単位マージは行わない）。
+  const performDriveSync=async(silent=false)=>{
+    if(!driveTokenRef.current||!dbRef.current) return;
+    setDriveSyncStatus("syncing");
+    setDriveSyncError("");
+    try{
+      const fileId=await driveFindSyncFileId(driveTokenRef.current);
+      const remote=await driveDownloadSyncFile(driveTokenRef.current,fileId);
+
+      const settingsRows=await dbGetAll(dbRef.current,STORES.SETTINGS);
+      const settingsMap={};
+      for(const row of settingsRows) settingsMap[row.key]=row.value;
+      const localUpdatedAt=settingsMap.local_updated_at||0;
+      const remoteUpdatedAt=remote?.updatedAtMs||0;
+
+      if(remote&&remoteUpdatedAt>localUpdatedAt){
+        // Drive側の方が新しい → ローカルを上書きして採用
+        const errMsg=validateFullBackup(remote);
+        if(errMsg) throw new Error(`Drive上のデータ形式が不正です：${errMsg}`);
+        const normalizedPatterns={
+          A:Array.isArray(remote.patterns?.A)?remote.patterns.A:[],
+          B:Array.isArray(remote.patterns?.B)?remote.patterns.B:[],
+        };
+        const normalizedSettings={...DEFAULT_SETTINGS,...remote.settings};
+        if(!normalizedSettings.workplaces.A) normalizedSettings.workplaces.A=DEFAULT_WP("A");
+        if(!normalizedSettings.workplaces.B) normalizedSettings.workplaces.B=DEFAULT_WP("B");
+        setRecords(remote.records);
+        setShifts(remote.shifts);
+        setPatterns(normalizedPatterns);
+        setSettings(normalizedSettings);
+        setSettingsForm(JSON.parse(JSON.stringify(normalizedSettings)));
+        await dbPutSetting(dbRef.current,"local_updated_at",remoteUpdatedAt);
+        if(!silent) showToast("Driveの新しいデータを取り込みました");
+      }else{
+        // ローカルの方が新しい、またはDrive側にまだファイルが無い → アップロード
+        const [recordsData,shiftsData,patternsData]=await Promise.all([
+          dbGetAll(dbRef.current,STORES.RECORDS),
+          dbGetAll(dbRef.current,STORES.SHIFTS),
+          dbGetAll(dbRef.current,STORES.PATTERNS),
+        ]);
+        const loadedPatterns={A:[],B:[]};
+        for(const pat of patternsData){ loadedPatterns[pat.wp==="B"?"B":"A"].push(pat); }
+        const loadedSettings={...DEFAULT_SETTINGS};
+        if(settingsMap.workplaces) loadedSettings.workplaces=settingsMap.workplaces;
+        if(settingsMap.currency) loadedSettings.currency=settingsMap.currency;
+        const payload={
+          app:"kslab_work_tracker", backupVersion:1,
+          exportedAt:new Date(localUpdatedAt||Date.now()).toISOString(),
+          updatedAtMs:localUpdatedAt||Date.now(),
+          records:recordsData, shifts:shiftsData, patterns:loadedPatterns, settings:loadedSettings,
+        };
+        await driveUploadSyncFile(driveTokenRef.current,fileId,payload);
+        if(!silent) showToast("Driveへ同期しました");
+      }
+      setLastSyncedAt(new Date());
+      setDriveSyncStatus("synced");
+    }catch(err){
+      setDriveSyncStatus("error");
+      setDriveSyncError(err.message||String(err));
+      if(!silent) showToast("同期に失敗しました："+(err.message||String(err)),"err");
+    }
+  };
+
+  // トークン取得後の共通処理：refに保存し、メールアドレスを取得し、同期を1回実行する
+  const handleDriveTokenReady=async(accessToken)=>{
+    driveTokenRef.current=accessToken;
+    setDriveSignedIn(true);
+    if(dbRef.current) await dbPutSetting(dbRef.current,DRIVE_CONNECTED_KEY,true);
+    driveFetchUserEmail(accessToken).then(email=>{ if(email) setDriveEmail(email); });
+    performDriveSync(true);
+  };
+
+  // 「Googleでログイン」ボタン：明示的な同意プロンプトを出す
+  const handleDriveSignIn=async()=>{
+    try{
+      await loadGisScript();
+      if(!driveTokenClientRef.current){
+        driveTokenClientRef.current=window.google.accounts.oauth2.initTokenClient({
+          client_id:GOOGLE_CLIENT_ID, scope:DRIVE_SCOPE,
+          callback:(resp)=>{
+            if(resp.error){ showToast("Googleログインに失敗しました："+resp.error,"err"); return; }
+            handleDriveTokenReady(resp.access_token);
+          },
+        });
+      }
+      driveTokenClientRef.current.requestAccessToken({prompt:"consent"});
+    }catch(err){
+      showToast("Googleログインの準備に失敗しました："+err.message,"err");
+    }
+  };
+
+  const handleDriveSignOut=async()=>{
+    if(driveTokenRef.current&&window.google?.accounts?.oauth2){
+      window.google.accounts.oauth2.revoke(driveTokenRef.current,()=>{});
+    }
+    driveTokenRef.current=null;
+    setDriveSignedIn(false);
+    setDriveEmail(null);
+    setDriveSyncStatus("idle");
+    if(dbRef.current) await dbPutSetting(dbRef.current,DRIVE_CONNECTED_KEY,false);
+    showToast("Googleドライブ連携を解除しました");
+  };
+
+  const handleDriveManualSync=()=>{
+    if(!driveSignedIn){ handleDriveSignIn(); return; }
+    performDriveSync(false);
+  };
+
+  // 起動時：前回ログイン済みだった場合のみ、サイレント（同意画面を出さない）再ログインを1回試みる
+  useEffect(()=>{
+    if(!dbReady||driveInitAttemptedRef.current) return;
+    driveInitAttemptedRef.current=true;
+    (async()=>{
+      try{
+        const settingsRows=await dbGetAll(dbRef.current,STORES.SETTINGS);
+        const wasConnected=settingsRows.find(r=>r.key===DRIVE_CONNECTED_KEY)?.value;
+        if(!wasConnected) return;
+        await loadGisScript();
+        driveTokenClientRef.current=window.google.accounts.oauth2.initTokenClient({
+          client_id:GOOGLE_CLIENT_ID, scope:DRIVE_SCOPE,
+          callback:(resp)=>{
+            if(resp.error) return; // サイレント失敗時は静かに諦める（ユーザーには手動ログインしてもらう）
+            handleDriveTokenReady(resp.access_token);
+          },
+        });
+        driveTokenClientRef.current.requestAccessToken({prompt:""});
+      }catch{ /* サイレント再ログイン失敗は無視 */ }
+    })();
+  },[dbReady]);
+
+  // データ変更後の自動同期：3秒デバウンスしてから同期する（連続入力のたびに同期しないため）
+  useEffect(()=>{
+    if(!dbReady||!driveSignedIn||driveDirtyTick===0) return;
+    if(driveSyncTimerRef.current) clearTimeout(driveSyncTimerRef.current);
+    driveSyncTimerRef.current=setTimeout(()=>{ performDriveSync(true); },3000);
+    return ()=>{ if(driveSyncTimerRef.current) clearTimeout(driveSyncTimerRef.current); };
+  },[driveDirtyTick,dbReady,driveSignedIn]);
 
   // ── 休憩前アラーム（Web Audio API）────────────────────────────────────────
   // 外部音声ファイルは使わず、その場でオシレーターから「ピンポンパンポン」風の4音チャイムを生成する。
@@ -1535,9 +1778,44 @@ export default function WorkTracker() {
               </button>
               <input ref={importRef} type="file" accept=".csv" onChange={handleImport} style={{display:"none"}}/>
 
+              {/* ── Google Drive 自動同期（v19で追加） ── */}
+              <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16,marginBottom:16}}>
+                <Lbl>☁️ Googleドライブ自動同期</Lbl>
+                <div style={{fontSize:12,color:C.muted,marginBottom:10,fontWeight:500,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:"10px"}}>
+                  ログインすると、この端末のデータをあなた自身のGoogleドライブ内（アプリ専用の非公開領域）に自動保存し、他の端末でも同じデータにアクセスできます。<br/>
+                  KS Labのサーバーは一切経由しません。データはあなたのGoogleアカウントの中だけに保存されます。
+                </div>
+                {!driveSignedIn?(
+                  <button onClick={handleDriveSignIn} style={{width:"100%",padding:"11px 0",borderRadius:10,border:"none",background:"#1a73e8",color:"#fff",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+                    🔐 Googleでログインして同期を有効にする
+                  </button>
+                ):(
+                  <div>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:8,padding:"10px 12px",marginBottom:8}}>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:700,color:"#15803d"}}>✓ 連携中{driveEmail?`（${driveEmail}）`:""}</div>
+                        <div style={{fontSize:12,color:C.muted,marginTop:2}}>
+                          {driveSyncStatus==="syncing"?"同期中…":
+                           driveSyncStatus==="error"?`同期エラー：${driveSyncError}`:
+                           lastSyncedAt?`最終同期：${lastSyncedAt.toLocaleString("ja-JP")}`:"未同期"}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:8}}>
+                      <button onClick={handleDriveManualSync} disabled={driveSyncStatus==="syncing"} style={{flex:1,padding:"10px 0",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:WPC.primary,fontWeight:700,fontSize:13,cursor:driveSyncStatus==="syncing"?"default":"pointer",opacity:driveSyncStatus==="syncing"?0.6:1}}>
+                        🔄 今すぐ同期
+                      </button>
+                      <button onClick={handleDriveSignOut} style={{padding:"10px 14px",borderRadius:10,border:"1px solid #fecaca",background:"none",color:"#dc2626",fontWeight:600,fontSize:13,cursor:"pointer"}}>
+                        連携解除
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* ── 全データバックアップ／復元（JSON）：機種変更・端末移行向け ── */}
               <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16}}>
-                <Lbl>📦 全データバックアップ（機種変更・端末移行用）</Lbl>
+                <Lbl>📦 全データバックアップ（機種変更・端末移行用・手動）</Lbl>
                 <div style={{fontSize:12,color:C.muted,marginBottom:10,fontWeight:500,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:"10px"}}>
                   打刻データ・シフト・パターン・設定（職場名・時給・アラーム設定等）を<b>すべて</b>1つのファイルにまとめて保存・復元します。<br/>
                   出力したファイルをGoogleドライブ等に保存しておき、新しい端末でこの画面から復元してください。新たなアカウント連携は不要です。
