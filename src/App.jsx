@@ -509,8 +509,20 @@ export default function WorkTracker() {
   // データ本体（records/shifts/patterns/settings）が変わるたびに「最終更新時刻」を記録し、
   // Drive同期のトリガー（driveDirtyTick）を進める。periodKeyやUIの表示状態は対象外
   // （同期すべき「データ」ではないため）。
+  //
+  // 【重要】初回のIndexedDB読み込み完了（dbReady: false→true）の瞬間にもこのエフェクトは
+  // 発火してしまう（records等がDBの値にセットされるのと同時に依存配列が変わるため）。
+  // これを「今ユーザーが編集した」と誤認すると、アプリを開いただけで local_updated_at が
+  // 現在時刻に更新されてしまい、他端末の同期時に「こちらの方が新しい」と誤判定して
+  // 空のデータ（または古いデータ）でDrive側を上書きする重大なバグになる。
+  // そのため、dbReady が true になった直後の1回目の発火はスキップし、
+  // 「本当にユーザーが操作して変わった」2回目以降の発火のみ local_updated_at を更新する。
+  const driveSkipFirstBumpRef=useRef(true);
+  const driveSuppressBumpRef=useRef(false); // Drive→ローカルへのデータ反映時、それ自体を「編集」と誤検知しないための抑制フラグ
   useEffect(()=>{
     if(!dbReady||!dbRef.current) return;
+    if(driveSkipFirstBumpRef.current){ driveSkipFirstBumpRef.current=false; return; }
+    if(driveSuppressBumpRef.current){ driveSuppressBumpRef.current=false; return; }
     dbPutSetting(dbRef.current,"local_updated_at",Date.now());
     setDriveDirtyTick(t=>t+1);
   },[records,shifts,patterns,settings,dbReady]);
@@ -545,6 +557,7 @@ export default function WorkTracker() {
         const normalizedSettings={...DEFAULT_SETTINGS,...remote.settings};
         if(!normalizedSettings.workplaces.A) normalizedSettings.workplaces.A=DEFAULT_WP("A");
         if(!normalizedSettings.workplaces.B) normalizedSettings.workplaces.B=DEFAULT_WP("B");
+        driveSuppressBumpRef.current=true; // このsetXはDriveからの取り込みであり、ユーザーの新規編集ではない
         setRecords(remote.records);
         setShifts(remote.shifts);
         setPatterns(normalizedPatterns);
